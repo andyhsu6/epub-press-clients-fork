@@ -1,11 +1,24 @@
 [English](README.en.md)
 
 # EpubPressX
-一个 chrome 插件，可以将网页制作成 epub 电子书，支持微信读书等。
+一个 Chrome 插件，可以将网页制作成 epub/txt 电子书，支持微信读书等。
 
 可以通过 [chrome 商店](https://chrome.google.com/webstore/detail/epubpressx-read-the-web-o/akgkfegkiajbamekmkcafnfckmhgcnpa) 进行安装。
 
 配合 [沉浸式翻译](https://chrome.google.com/webstore/detail/immersive-translate/bpoadfkcbjbfhfodiogcnhhhpibjhbnh)  插件可以制作双语电子书。
+
+## 功能
+
+- 将网页制作成 **EPUB** 或 **TXT** 电子书（本地生成，无需服务器）
+- 支持多标签页合并成一本书
+- 自动分页抓取（多页文章自动合并）
+- 自动生成目录（TOC）
+- 自动生成书名
+- 可设置封面
+- 可选择是否包含图片
+- 自动剔除广告/推荐链接与裸网址文字，保留正文、标题和作者
+- 支持中英文界面
+- 兼容 Firefox（Manifest V3 + gecko 设置）
 
 ## 效果预览
 ![效果预览](screenshots/4.png)
@@ -42,6 +55,28 @@ zip -9 -X -r -u ../file.epub *
 [wikipedia](https://en.wikipedia.org/wiki/EPUB#Version_3.0.1),
 [w3 standard](https://www.w3.org/TR/epub-33/)
 
+## 本地开发
+
+```sh
+cd packages/epub-press-chrome
+npm install
+npm run build        # 开发构建
+npm start            # 构建 + 监听
+npm run build-prod   # 生产构建
+```
+
+加载未打包扩展：
+1. 运行 `npm run build`（或 `npm run build-prod`）
+2. 打开 `chrome://extensions`，开启开发者模式
+3. 点击「加载已解压的扩展程序」，选择 `packages/epub-press-chrome/app/`
+
+运行测试：
+```sh
+npm test                              # dev-server + 浏览器交互测试
+node run-browser-tests.mjs            # 无头浏览器自动测试（Brave/Chrome）
+node --test node-strip-test.mjs       # Node 原生测试
+```
+
 ## Fork 来源
 Fork from https://github.com/haroldtreen/epub-press-clients
 
@@ -51,3 +86,5 @@ Fork from https://github.com/haroldtreen/epub-press-clients
 - 修复了图片位置的问题
 - 可以设置封面
 - 可选择是否包含图片
+- 自动分页抓取与目录生成
+- 导出时剔除广告/推荐链接与裸网址文字

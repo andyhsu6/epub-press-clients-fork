@@ -40,7 +40,9 @@ npm install          # install dependencies
 npm run build        # single webpack build (development)
 npm start            # build + watch
 npm run build-prod   # production build for release
-npm test             # builds test bundle, opens browser at localhost:5001/tests
+npm test             # builds test bundle, opens browser at localhost:5001/index.html
+node run-browser-tests.mjs   # headless browser tests (Brave/Chrome via CDP)
+node --test node-strip-test.mjs   # Node-native strip tests (linkedom shim)
 ```
 
 ## Architecture
@@ -68,7 +70,7 @@ Chrome Manifest V3 extension (EpubPressX custom line). Webpack produces entries 
 
 ### Testing
 
-Both packages use **browser-based tests only** (mocha + mocha-loader + webpack-dev-server). `npm test` sets `NODE_ENV=test` (or `ENV=test` for the chrome package), which switches the webpack config to bundle tests instead of the library, then opens `http://localhost:5001/tests` in the browser. There is no CLI test runner.
+The chrome package uses browser-based tests (mocha + mocha-loader + webpack-dev-server). `npm test` sets `ENV=test`, which switches the webpack config to bundle tests, then opens `http://localhost:5001/index.html` in the browser. There is also a headless runner (`node run-browser-tests.mjs`, uses Brave/Chrome via CDP) and Node-native tests (`node --test node-strip-test.mjs`, linkedom shim).
 
 Tests live in `tests/` and are discovered via `require.context` in `tests/index.js` (matching `*-test.js` files).
 
