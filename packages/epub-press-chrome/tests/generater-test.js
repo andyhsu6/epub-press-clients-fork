@@ -63,13 +63,27 @@ describe('stripExternalLinkBlocks', () => {
     });
 
     it('removes external-domain link blocks (ad/recommendation) from exported text', async () => {
+        // Block-level ad links survive extraction (unlike inline <a>); must be removed.
         const body = `<p>${FILLER}</p>
-            <p>正文 <a href="https://ads.example.net/landing">广告书名</a> 之后还有正文。</p>`;
+            <a href="https://ads.example.net/landing"><div class="h5">广告书名</div><div>广告作者</div><div>广告简介</div></a>
+            <p>之后还有正文。</p>`;
         const blob = await generateTxt(makeBook(body));
         const text = await blob.text();
 
-        assert.notInclude(text, '广告书名', 'external ad block text must be removed');
+        assert.notInclude(text, '广告书名', 'external ad block book title must be removed');
+        assert.notInclude(text, '广告作者', 'external ad block author must be removed');
+        assert.notInclude(text, '广告简介', 'external ad block blurb must be removed');
         assert.include(text, '之后还有正文', 'surrounding real text must remain');
+    });
+
+    it('removes leftover bare link text that lost its <a> tag during extraction', async () => {
+        const body = `<p>${FILLER}</p>
+            <p>正文 <a href="https://ads.example.net/landing">https://ads.example.net/landing</a> 之后。</p>`;
+        const blob = await generateTxt(makeBook(body));
+        const text = await blob.text();
+
+        assert.notInclude(text, 'https://ads.example.net/landing', 'link text that is a URL must be removed');
+        assert.include(text, '之后', 'surrounding text must remain');
     });
 
     it('removes bare URL strings from text', async () => {

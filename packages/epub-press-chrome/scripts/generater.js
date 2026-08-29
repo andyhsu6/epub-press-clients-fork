@@ -258,10 +258,16 @@ function initSanitize(includeImages) {
     const san = getSanitizeHtmlOptions()
     san.allowedAttributes.img = ['src', 'alt', 'title']
     if (!includeImages) {
-        // remove img tag
-        san.allowedTags.splice(san.allowedTags.indexOf('img'), 1)
-        // remove picture tag
-        san.allowedTags.splice(san.allowedTags.indexOf('picture'), 1)
+        // getSanitizeHtmlOptions returns a shallow clone whose allowedTags array
+        // is shared with the module default; repeated calls must not splice -1.
+        const imgIdx = san.allowedTags.indexOf('img')
+        if (imgIdx > -1) {
+            san.allowedTags.splice(imgIdx, 1)
+        }
+        const picIdx = san.allowedTags.indexOf('picture')
+        if (picIdx > -1) {
+            san.allowedTags.splice(picIdx, 1)
+        }
     }
     setSanitizeHtmlOptions(san)
 }
