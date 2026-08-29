@@ -9,6 +9,12 @@ const SAMPLE_HTML = `<!DOCTYPE html>
         <h1>Sample Article</h1>
         <p>First paragraph with a <a href="https://example.com">link</a>.</p>
         <p>Second paragraph.</p>
+        <p>This is a longer paragraph of real article content so the extractor's
+        content length threshold is satisfied and the article body survives
+        extraction. It needs to comfortably exceed two hundred characters of
+        text after all markup is stripped, which this sentence plus the following
+        filler sentence about the EpubPressX browser extension that turns web
+        pages into EPUB books and plain text files will easily do.</p>
     </article>
 </body>
 </html>`;
