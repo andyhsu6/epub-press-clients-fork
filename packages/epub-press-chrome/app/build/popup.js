@@ -34151,11 +34151,11 @@ class Browser {
   }
 
   static isBackgroundMsg(sender) {
-    return sender.url.indexOf('popup') < 0;
+    return !sender.url || sender.url.indexOf('popup') < 0;
   }
 
   static isPopupMsg(sender) {
-    return sender.url.indexOf('popup') > -1;
+    return sender.url && sender.url.indexOf('popup') > -1;
   }
 
   static getCurrentWindowTabs() {
@@ -34184,16 +34184,25 @@ class Browser {
   }
 
   static getTabsHtml(tabs) {
+    const func = () => document.documentElement.outerHTML;
+
     const htmlPromises = tabs.map(tab => new (bluebird_default())(resolve => {
       chrome.scripting.executeScript({
         target: {
           tabId: tab.id
         },
-        func: () => document.documentElement.outerHTML
-      }).then(list => {
-        resolve({ ...tab,
-          html: list[0].result
-        });
+        func
+      }, results => {
+        const updatedTab = tab;
+        const html = results && results[0] && results[0].result;
+
+        if (html && html.match(/html/i)) {
+          updatedTab.html = html;
+        } else {
+          updatedTab.html = null;
+        }
+
+        resolve(updatedTab);
       });
     }));
     return bluebird_default().all(htmlPromises);
@@ -34217,6 +34226,16 @@ class Browser {
         cb(request, sender);
       }
     });
+  }
+
+  static connect(name = 'epub-press') {
+    return chrome.runtime.connect({
+      name
+    });
+  }
+
+  static onPortConnection(cb) {
+    chrome.runtime.onConnect.addListener(cb);
   }
 
   static download(params) {

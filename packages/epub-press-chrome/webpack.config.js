@@ -38,6 +38,10 @@ if (process.env.ENV !== 'test') {
         ],
         resolve: {
             extensions: ['.js'],
+            alias: {
+                'epub-press-js$': path.join(__dirname, '../epub-press-js/epub-press.js'),
+                'file-saver': path.join(__dirname, 'scripts/file-saver-stub.js'),
+            },
             fallback: {
               fs: false
             }
