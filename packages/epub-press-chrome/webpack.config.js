@@ -47,9 +47,8 @@ if (process.env.ENV !== 'test') {
             }
         },
         devServer: {
-            hostname: 'localhost',
-            port: '5000',
-            inline: true,
+            host: 'localhost',
+            port: 5000,
         },
     };
 } else {
@@ -67,6 +66,9 @@ if (process.env.ENV !== 'test') {
             new webpack.DefinePlugin({
                 'process.env.ENV': JSON.stringify(process.env.NODE_ENV || 'test'),
             }),
+            new webpack.ProvidePlugin({
+                process: 'process/browser',
+            }),
         ],
         resolve: {
             extensions: ['.js'],
@@ -75,8 +77,10 @@ if (process.env.ENV !== 'test') {
             }
         },
         devServer: {
-            port: '5001',
-            inline: true,
+            port: 5001,
+            static: {
+                directory: path.join(__dirname, 'tests'),
+            },
         },
     };
 }

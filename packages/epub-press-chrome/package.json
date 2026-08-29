@@ -3,7 +3,7 @@
     "main": "index.js",
     "private": true,
     "scripts": {
-        "test": "cross-env ENV=test && open http://localhost:5001/tests && webpack-dev-server",
+        "test": "cross-env ENV=test && open http://localhost:5001/index.html && webpack-dev-server",
         "build": "cross-env ENV=development && webpack",
         "webpackVer": "webpack --version",
         "build-prod": "cross-env NODE_ENV=production && webpack",
@@ -42,6 +42,6 @@
         "sinon": "^7.5.0",
         "webpack": "^5.88.2",
         "webpack-cli": "^5.1.4",
-        "webpack-dev-server": "^3.11.0"
+        "webpack-dev-server": "^4.15.2"
     }
 }
