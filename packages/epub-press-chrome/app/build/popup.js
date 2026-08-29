@@ -34228,6 +34228,18 @@ class Browser {
     });
   }
 
+  static async blobToDataUrl(blob) {
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+
+    for (let i = 0; i < bytes.length; i += 1) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+
+    return `data:${blob.type};base64,${btoa(binary)}`;
+  }
+
   static connect(name = 'epub-press') {
     return chrome.runtime.connect({
       name
@@ -50218,12 +50230,20 @@ jquery_default()('#download').click(() => {
         includeImages: jquery_default()('#include-images').prop('checked'),
         sections
       };
-      FORMATS[format](book).then(blob => {
+      FORMATS[format](book).then(async blob => {
+        const url = await browser.blobToDataUrl(blob);
         chrome.downloads.download({
-          url: URL.createObjectURL(blob),
+          url,
           filename: `${book.title}.${format}`
+        }, downloadId => {
+          if (chrome.runtime.lastError) {
+            ui.setErrorMessage(`Download failed: ${chrome.runtime.lastError.message}`);
+          } else if (downloadId === undefined) {
+            ui.setErrorMessage('Download failed: no download id returned');
+          } else {
+            ui.showSection('#downloadSuccess');
+          }
         });
-        ui.showSection('#downloadSuccess');
       });
     }).catch(error => {
       ui.setErrorMessage(`Could not find tab content: ${error}`);

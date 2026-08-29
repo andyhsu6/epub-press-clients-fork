@@ -95,6 +95,16 @@ class Browser {
         });
     }
 
+    static async blobToDataUrl(blob) {
+        const buf = await blob.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 1) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return `data:${blob.type};base64,${btoa(binary)}`;
+    }
+
     static connect(name = 'epub-press') {
         return chrome.runtime.connect({ name });
     }

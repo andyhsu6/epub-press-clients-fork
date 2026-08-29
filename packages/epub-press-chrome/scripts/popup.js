@@ -132,12 +132,20 @@ $('#download').click(() => {
                 includeImages: $('#include-images').prop('checked'),
                 sections,
             };
-            FORMATS[format](book).then((blob) => {
+            FORMATS[format](book).then(async (blob) => {
+                const url = await Browser.blobToDataUrl(blob);
                 chrome.downloads.download({
-                    url: URL.createObjectURL(blob),
+                    url,
                     filename: `${book.title}.${format}`,
+                }, (downloadId) => {
+                    if (chrome.runtime.lastError) {
+                        UI.setErrorMessage(`Download failed: ${chrome.runtime.lastError.message}`);
+                    } else if (downloadId === undefined) {
+                        UI.setErrorMessage('Download failed: no download id returned');
+                    } else {
+                        UI.showSection('#downloadSuccess');
+                    }
                 });
-                UI.showSection('#downloadSuccess');
             });
         }).catch((error) => {
             UI.setErrorMessage(`Could not find tab content: ${error}`);
