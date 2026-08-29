@@ -2,7 +2,7 @@ import $ from 'jquery';
 
 import Browser from './browser';
 import UI from './ui';
-import { generateEpub } from './generater';
+import { generateEpub, generateTxt } from './generater';
 
 /*
 i18n
@@ -14,6 +14,8 @@ $('#auto-gen-title title').text(chrome.i18n.getMessage('textAutoGenTitle'));
 $('#text-cover').text(chrome.i18n.getMessage('textCover'));
 // text-include-images
 $('#text-include-images').text(chrome.i18n.getMessage('textIncludeImages'));
+// text-format
+$('#text-format').text(chrome.i18n.getMessage('textFormat'));
 // text-select-pages
 $('#text-select-pages').text(chrome.i18n.getMessage('textSelectPages'));
 // text-select-all
@@ -113,6 +115,12 @@ $('#download').click(() => {
     });
 
 
+    const FORMATS = {
+        epub: generateEpub,
+        txt: generateTxt,
+    };
+    const format = FORMATS[$('#book-format').val()] ? $('#book-format').val() : 'epub';
+
     if (selectedItems.length <= 0) {
         $('#alert-message').text(chrome.i18n.getMessage('textNoItems'));
     } else {
@@ -124,10 +132,10 @@ $('#download').click(() => {
                 includeImages: $('#include-images').prop('checked'),
                 sections,
             };
-            generateEpub(book).then((blob) => {
+            FORMATS[format](book).then((blob) => {
                 chrome.downloads.download({
                     url: URL.createObjectURL(blob),
-                    filename: `${book.title}.epub`,
+                    filename: `${book.title}.${format}`,
                 });
                 UI.showSection('#downloadSuccess');
             });

@@ -30,6 +30,10 @@
         "message": "Include Images",
         "description": "Include images in the book."
     },
+    "textFormat": {
+        "message": "Format:",
+        "description": "File format of the exported book."
+    },
     "textSelectPages": {
         "message": "Select pages for your book:",
         "description": "Select pages to include in the book."

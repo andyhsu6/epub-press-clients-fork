@@ -30,6 +30,10 @@
         "message": "包含图片",
         "description": "Include images in the book."
     },
+    "textFormat": {
+        "message": "格式：",
+        "description": "File format of the exported book."
+    },
     "textSelectPages": {
         "message": "选择页面生成图书：",
         "description": "Select pages to include in the book."
