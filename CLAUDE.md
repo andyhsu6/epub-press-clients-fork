@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project rules (EpubPressX)
+
+- **Issues / PR 同步**：本仓库（`fork` 远程 = `andyhsu6/epub-press-clients-fork`）或上游（`haroldtreen/epub-press-clients`）的 issues 和 PR 有变动时（新增 / 关闭 / 评论 / CI 状态变化 / 合并），必须及时同步更新本地记录：评估对本地 `epubpressx-custom` 分支的影响，并更新 `.omo/` 下的相关记录（plan / ledger / merge-record）。
+- **上游合并纪律**：本地是 EpubPressX 定制线（本地生成 EPUB），上游是服务端发布架构。合并上游提交时遵循 `方案 A`（本地为主，只吸收不冲突的修复如 MV3/Firefox 兼容），并在 `.omo/merge-record-*.md` 记录。
+- **远程约定**：`origin` = sunxen/EpubPressX（原始来源），`fork` = andyhsu6/epub-press-clients-fork（本项目的推送目标，分支 `epubpressx-custom`）。提交推送到 `fork`。
+
 ## Overview
 
 This is a monorepo containing client packages for [EpubPress](https://epub.press), a service that stitches web articles into ebooks. The three packages are:
@@ -49,13 +55,14 @@ The `EpubPress` class wraps the REST API at `https://epub.press/api/v1`. The pub
 
 ### epub-press-chrome
 
-Chrome Manifest V2 extension. Webpack produces two entry points into `app/build/`:
+Chrome Manifest V3 extension (EpubPressX custom line). Webpack produces entries into `app/build/`:
 
-- **`popup.js`** (`scripts/popup.js`) — UI logic for the extension popup. Reads tab list, handles form interactions, and communicates with the background script via `chrome.runtime.sendMessage`.
-- **`background.js`** (`scripts/background.js`) — Persistent background script that does the actual `EpubPress` API calls. Receives `download` action from popup, calls `book.publish()`, then either downloads or emails the result. Relays `statusUpdate` events back to the popup as `publish` messages.
+- **`popup.js`** (`scripts/popup.js`) — UI logic for the extension popup. Reads tab list, handles form interactions, and **generates the book locally**: `generateEpub`/`generateTxt` (from `scripts/generater.js`) produce the file directly, then `chrome.downloads.download` saves it.
+- **`service.js`** (`scripts/service.js`) — MV3 service worker entry (currently a stub; local generation does not need a persistent background worker).
 
-**Key detail:** `background.js` overrides `EpubPress.BASE_API` using `manifest.homepage_url`, so pointing `homepage_url` in `manifest.json` to `http://localhost:3000` redirects all API calls to a local EpubPress server.
+**Key detail (EpubPressX custom):** books are generated **locally in the popup** via `generater.js` (uses `@extractus/article-extractor` + JSZip), not via the server-side `epub.press` API. The upstream publish flow (background.js → `EpubPress` API → poll → download) is not used.
 
+`generater.js` — core content pipeline: extracts article via `@extractus/article-extractor` (`extractFromHtml` + Readability + sanitize-html), auto-paginates, strips external-domain ad/recommendation link blocks and bare URLs (`stripExternalLinkBlocks`), builds TOC, assembles EPUB with JSZip, or plain text.
 `browser.js` — thin abstraction over `chrome.*` APIs (tabs, storage, downloads, messaging).
 `ui.js` — DOM manipulation for the popup (section visibility, progress animation, tab list rendering).
 

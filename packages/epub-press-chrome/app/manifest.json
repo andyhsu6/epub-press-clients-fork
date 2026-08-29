@@ -1,7 +1,7 @@
 {
     "name": "__MSG_appName__",
     "short_name": "__MSG_appShortName__",
-    "version": "1.2.3",
+    "version": "1.2.4",
     "author": "sunxen",
     "homepage_url": "https://github.com/sunxen/EpubPressX",
     "manifest_version": 3,
