@@ -1,7 +1,7 @@
 # EpubPressX
-A Chrome extension that can convert web pages into epub/txt e-books, compatible with WeChat Reading and others.
+A browser extension that converts web pages into epub/txt e-books. Works on all Chromium-based browsers (Chrome, Brave, Edge, Firefox, etc.); the generated books can be imported into WeChat Reading and other readers.
 
-You can install it from the [Chrome Store](https://chrome.google.com/webstore/detail/epubpressx-read-the-web-o/akgkfegkiajbamekmkcafnfckmhgcnpa).
+> Note: The EpubPressX already on the Chrome Store is the original author's (haroldtreen) release. This repository is a customized fork (local EPUB generation) and is not yet on the store. To install this version, use "Load unpacked" in Developer Mode — see "Local development" below.
 
 ## Features
 

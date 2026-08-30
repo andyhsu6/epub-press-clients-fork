@@ -1,9 +1,9 @@
 [English](README.en.md)
 
 # EpubPressX
-一个 Chrome 插件，可以将网页制作成 epub/txt 电子书，支持微信读书等。
+一个浏览器扩展，可以将网页制作成 epub/txt 电子书。支持所有 Chromium 内核浏览器（Chrome、Brave、Edge、Firefox 等），生成的电子书可导入微信读书等阅读器。
 
-可以通过 [chrome 商店](https://chrome.google.com/webstore/detail/epubpressx-read-the-web-o/akgkfegkiajbamekmkcafnfckmhgcnpa) 进行安装。
+> 注意：Chrome 商店里已有的 EpubPressX 是原作者（haroldtreen）发布的版本；本仓库是定制分支（本地生成 EPUB），尚未上传商店。如需安装本版本，请使用「开发者模式加载已解压的扩展程序」方式，见下方「本地开发」。
 
 配合 [沉浸式翻译](https://chrome.google.com/webstore/detail/immersive-translate/bpoadfkcbjbfhfodiogcnhhhpibjhbnh)  插件可以制作双语电子书。
 
