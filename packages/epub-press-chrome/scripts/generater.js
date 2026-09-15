@@ -214,15 +214,23 @@ async function extractWithPagination(html, url) {
     let pageCount = 1;
     const fetchedUrls = new Set([url]);   // track visited URLs to prevent loops
 
+    // ── Stop-reason recording (observability only — no control flow change) ──
+    // `null` means no explicit break ran, i.e. the while condition ended the loop.
+    let stopReason = null;
+    let status = null;
+    let lastUrl = url;
+    let error = null;
+
     while (pageCount < MAX_PAGINATION_PAGES) {
         const nextUrl = findNextPageUrl(currentHtml, currentUrl);
-        if (!nextUrl || nextUrl === currentUrl) break;
+        if (!nextUrl || nextUrl === currentUrl) { stopReason = 'complete'; break; }
 
         // Skip URLs we've already seen (prevents loops from URL inference)
-        if (fetchedUrls.has(nextUrl)) break;
+        if (fetchedUrls.has(nextUrl)) { stopReason = 'already-visited'; break; }
         fetchedUrls.add(nextUrl);
 
         try {
+            lastUrl = nextUrl;
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), PAGINATION_TIMEOUT_MS);
             const resp = await fetch(nextUrl, {
@@ -230,29 +238,35 @@ async function extractWithPagination(html, url) {
                 credentials: 'include',          // send cookies for same-origin auth
             });
             clearTimeout(timeoutId);
+            status = resp.status;
 
-            if (!resp.ok) break;
+            if (!resp.ok) { stopReason = 'http-error'; break; }
 
             const nextHtml = await resp.text();
             const nextPage = await extractFromHtml(nextHtml, nextUrl);
-            if (!nextPage || !nextPage.content) break;
+            if (!nextPage || !nextPage.content) { stopReason = 'empty-page'; break; }
 
             // Dedup: if the new content is identical to the last page, stop
             const lastContent = allContent[allContent.length - 1];
-            if (normalizeWhitespace(nextPage.content) === normalizeWhitespace(lastContent)) break;
+            if (normalizeWhitespace(nextPage.content) === normalizeWhitespace(lastContent)) { stopReason = 'duplicate-page'; break; }
 
             allContent.push(nextPage.content);
             currentUrl = nextUrl;
             currentHtml = nextHtml;
             pageCount++;
-        } catch {
+        } catch (err) {
+            stopReason = err && err.name === 'AbortError' ? 'timeout' : 'fetch-failed';
+            error = (err && err.message) || String(err);
             break;  // network error or timeout — stop pagination gracefully
         }
     }
 
+    if (stopReason === null) stopReason = 'page-limit';
+
     if (pageCount > 1) {
         page.content = allContent.join('\n<!-- pagination-break -->\n');
     }
+    page.pagination = { pagesMerged: pageCount, stopReason, status, lastUrl, error };
     return page;
 }
 
@@ -606,8 +620,9 @@ async function extractPages(book) {
     initSanitize(book.includeImages)
     book.id = `book-${Date.now()}`
     book.pages = []
+    book.pagination = []
     const sectionLanguages = [];
-    for(const section of book.sections) {
+    for(const [sectionIndex, section] of book.sections.entries()) {
         const page = await extractWithPagination(section.html, section.url)
         if (page) {
             page.content = stripExternalLinkBlocks(page.content, page.url);
@@ -616,6 +631,23 @@ async function extractPages(book) {
                 sectionLanguages.push(page.language);
             }
             book.pages.push(page)
+            book.pagination.push({
+                sectionIndex,
+                sectionUrl: section.url,
+                title: page.title,
+                ...page.pagination,
+            })
+        } else {
+            book.pagination.push({
+                sectionIndex,
+                sectionUrl: section.url,
+                title: null,
+                pagesMerged: 0,
+                stopReason: 'no-article',
+                status: null,
+                lastUrl: section.url,
+                error: null,
+            })
         }
     }
     book.language = sectionLanguages[0] || 'en';
