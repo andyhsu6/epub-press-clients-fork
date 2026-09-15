@@ -1,5 +1,7 @@
 import { extractFromHtml, getSanitizeHtmlOptions, setSanitizeHtmlOptions } from '@extractus/article-extractor'
 import JSZip from 'jszip';
+import { encodeXml } from './escape.js';
+import { detectChapterTitles, cleanChapterTitle } from './toc.js';
 
 // ─── Auto-Pagination Constants ───────────────────────────────────────────────
 const MAX_PAGINATION_PAGES = 50;       // safety limit to prevent infinite loops
@@ -286,9 +288,9 @@ const template = {
         return `<?xml version="1.0"?>
 <package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
     <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
-        <dc:title>${book.title}</dc:title>
-        <dc:language>${book.language}</dc:language>
-        <dc:identifier id="BookId" opf:scheme="uuid">${book.id}</dc:identifier>
+        <dc:title>${htmlEncode(book.title)}</dc:title>
+        <dc:language>${htmlEncode(book.language)}</dc:language>
+        <dc:identifier id="BookId" opf:scheme="uuid">${htmlEncode(book.id)}</dc:identifier>
         <dc:creator opf:file-as="" opf:role="aut">EpubPressX</dc:creator>
         <meta name="cover" content="cover"/>
     </metadata>
@@ -296,7 +298,7 @@ const template = {
 ${book.pages.map((page, index) => `        <item id="chapter${index + 1}" href="chapter${index + 1}.xhtml" media-type="application/xhtml+xml"/>`).join('\n')}
         <item id="references" href="references.xhtml" media-type="application/xhtml+xml"/>
         <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-${images.map(image => `        <item id="${image.id}" href="${image.path}" media-type="${image.type}"/>`).join('\n')}
+${images.map(image => `        <item id="${htmlEncode(image.id)}" href="${htmlEncode(image.path)}" media-type="${htmlEncode(image.type)}"/>`).join('\n')}
     </manifest>
     <spine toc="ncx">
 ${book.pages.map((page, index) => `        <itemref idref="chapter${index + 1}" />`).join('\n')}
@@ -307,25 +309,21 @@ ${book.pages.map((page, index) => `        <itemref idref="chapter${index + 1}" 
 
     ['OEBPS/toc.ncx']: function (book) {
         return `<?xml version="1.0" encoding="UTF-8"?>
-<ncx version="2005-1" xml:lang="${book.language}" xmlns="http://www.daisy.org/z3986/2005/ncx/">
+<ncx version="2005-1" xml:lang="${htmlEncode(book.language)}" xmlns="http://www.daisy.org/z3986/2005/ncx/">
     <head>
-        <meta name="dtb:uid" content="${book.id}"/> <!-- same as in .opf -->
-        <meta name="dtb:depth" content="1"/> <!-- 1 or higher -->
+        <meta name="dtb:uid" content="${htmlEncode(book.id)}"/> <!-- same as in .opf -->
+        <meta name="dtb:depth" content="${book.tocNavDepth || 1}"/> <!-- levels of nested navPoints -->
         <meta name="dtb:totalPageCount" content="0"/> <!-- must be 0 -->
         <meta name="dtb:maxPageNumber" content="0"/> <!-- must be 0 -->
     </head>
     <docTitle>
-        <text>${book.title}</text>
+        <text>${htmlEncode(book.title)}</text>
     </docTitle>
     <docAuthor>
         <text>EpubPressX</text>
     </docAuthor>
     <navMap>
-${book.pages.map((page, index) => `        <navPoint id="chapter${index + 1}" playOrder="${index + 1}">
-            <navLabel><text>${page.title}</text></navLabel>
-            <content src="chapter${index + 1}.xhtml"/>
-        </navPoint>`).join('\n')}
-        <navPoint id="references" playOrder="${book.pages.length + 1}">
+${book.tocNavXml || ''}        <navPoint id="references" playOrder="${(book.tocNavCount || 0) + 1}">
             <navLabel><text>References</text></navLabel>
             <content src="references.xhtml"/>
         </navPoint>
@@ -334,11 +332,11 @@ ${book.pages.map((page, index) => `        <navPoint id="chapter${index + 1}" pl
     },
 
     chapter: function (title, content, language) {
-        const languageAttributes = language ? ` lang="${language}" xml:lang="${language}"` : '';
+        const languageAttributes = language ? ` lang="${htmlEncode(language)}" xml:lang="${htmlEncode(language)}"` : '';
         return `<?xml version="1.0" encoding="UTF-8" ?>
 <html xmlns="http://www.w3.org/1999/xhtml"${languageAttributes}>
     <head>
-        <title>${title}</title>
+        <title>${htmlEncode(title)}</title>
         <style>
             body {
                 font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
@@ -359,7 +357,7 @@ ${book.pages.map((page, index) => `        <navPoint id="chapter${index + 1}" pl
         </style>
     </head>
     <body>
-        <h2>${title}</h2>
+        <h2>${htmlEncode(title)}</h2>
         ${content}
     </body>
 </html>`
@@ -379,7 +377,7 @@ ${book.pages.map((page, index) => `        <navPoint id="chapter${index + 1}" pl
     <body>
         <h2>References</h2>
         <ol>
-${book.pages.map((page) => `            <li><a href="${htmlEncode(page.url)}">${htmlEncode(page.title)} (${htmlEncode(page.url)})</a></li>`).join('\n')}
+${book.pages.filter((page) => !page.isToc).map((page) => `            <li><a href="${htmlEncode(page.url)}">${htmlEncode(page.title)} (${htmlEncode(page.url)})</a></li>`).join('\n')}
         </ol>
     </body>
 </html>`
@@ -387,12 +385,7 @@ ${book.pages.map((page) => `            <li><a href="${htmlEncode(page.url)}">${
 }
 
 function htmlEncode(input = '') {
-    return input
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return encodeXml(input);
 }
 
 function normalizeLanguageTag(language = '') {
@@ -472,10 +465,10 @@ function replaceImages(html, images) {
 
     const dom = new DOMParser().parseFromString(html, 'text/xml');
     const pageImages = dom.querySelectorAll('img');
-    pageImages.forEach((image) => {    
-        const src = image.src;
-        if (srcPathMap[src]) {
-            image.src = srcPathMap[src];
+    pageImages.forEach((image) => {
+        const src = image.getAttribute('src');
+        if (src && srcPathMap[src]) {
+            image.setAttribute('src', srcPathMap[src]);
         }
     })
 
@@ -532,110 +525,81 @@ function downloadImages(images) {
     return Promise.all(promises)
 }
 
+
 // ─── Auto-Generated Table of Contents ─────────────────────────────────────────
-// Scan extracted content for headings (h1-h4), add anchor IDs, and build a TOC page.
+// Detection lives in toc.js. This section turns its flat level-tagged entries into
+// a tree that both the visible TOC page and toc.ncx render from, so the reader's own
+// outline panel and the in-book contents page cannot disagree.
 
-function buildTocFromPages(pages) {
-    const entries = [];  // { level, text, id, pageIdx }
-    let headingCount = 0;
+const MAX_TOC_DEPTH = 5;
 
-    pages.forEach((page, pageIdx) => {
-        let debug = { pageIdx, contentLen: page.content?.length, pCount: 0, hCount: 0, matched: false, err: null };
-        try {
-            const dom = new DOMParser().parseFromString(page.content, 'text/html');
-            const body = dom.body;
-            if (!body) { console.log('[TOC] no body', debug); return; }
-
-            // ── Strategy A: explicit heading tags (h1-h4) ──────────────
-            const headings = body.querySelectorAll('h1, h2, h3, h4');
-            debug.hCount = headings.length;
-            headings.forEach(h => {
-                const text = (h.textContent || '').trim();
-                if (!text) return;
-                const id = `toc-h-${headingCount}`;
-                h.setAttribute('id', id);
-                entries.push({
-                    level: parseInt(h.tagName[1], 10),
-                    text,
-                    id,
-                    pageIdx,
-                });
-                headingCount++;
-            });
-
-            // ── Strategy B: implicit headings inside <p> tags ───────────
-            const paras = body.querySelectorAll('p');
-            debug.pCount = paras.length;
-            paras.forEach(p => {
-                const fullText = (p.textContent || '').trim();
-                if (!fullText) return;
-                if (p.querySelector('h1, h2, h3, h4')) return;
-
-                let titleText = '';
-                let isHeading = false;
-
-                if (/^第[一二三四五六七八九十零〇百千万\d]+[章节回篇部集]/.test(fullText)) {
-                    const html = p.innerHTML;
-                    const brIdx = html.indexOf('<br>');
-                    if (brIdx > 0) {
-                        const beforeBr = html.substring(0, brIdx);
-                        const tempDoc = new DOMParser().parseFromString(beforeBr, 'text/html');
-                        titleText = (tempDoc.body.textContent || '').trim();
-                    } else {
-                        titleText = fullText;
-                    }
-                    if (titleText) {
-                        isHeading = true;
-                        debug.matched = true;
-                        debug.matchText = titleText.substring(0, 30);
-                    }
-                }
-
-                if (isHeading && titleText) {
-                    const id = `toc-h-${headingCount}`;
-                    p.setAttribute('id', id);
-                    entries.push({
-                        level: 1,
-                        text: titleText,
-                        id,
-                        pageIdx,
-                    });
-                    headingCount++;
-                }
-            });
-
-            // Serialize back
-            const serializer = new XMLSerializer();
-            let html = serializer.serializeToString(body);
-            html = html.replace(/^<body[^>]*>/, '').replace(/<\/body>$/, '');
-            page.content = html;
-        } catch (e) {
-            debug.err = e.message;
-            console.log('[TOC] error', debug);
+async function buildTocEntries(book) {
+    const entries = [];
+    let idOffset = 0;
+    for (const page of book.pages) {
+        const detected = detectChapterTitles(page.content, idOffset);
+        idOffset += detected.entries.length;
+        page.content = detected.content;
+        if (detected.entries.length === 0) {
+            entries.push({ text: cleanChapterTitle(page.title, book.title), level: 0, id: null, page });
+            continue;
         }
-        console.log('[TOC] debug', JSON.stringify(debug));
-    });
-
+        detected.entries.forEach((e) => entries.push({ text: e.text, level: e.level, id: e.id, page }));
+    }
     return entries;
 }
 
-function generateTocHtml(entries) {
-    if (entries.length === 0) return '';
+// Only the *change* in level is meaningful: heading tags are not a shared scale
+// across merged pages, because a surviving h1 gets rewritten to h2 upstream.
+function buildNavTree(entries) {
+    const root = { children: [] };
+    const stack = [root];
+    let prevLevel = null;
+    let prevDepth = 0;
+    entries.forEach((entry) => {
+        const level = Number.isFinite(entry.level) ? Math.max(0, entry.level) : 0;
+        let depth;
+        if (prevLevel === null) depth = 0;
+        else if (level > prevLevel) depth = prevDepth + 1;
+        else if (level === prevLevel) depth = prevDepth;
+        else depth = Math.max(0, prevDepth - (prevLevel - level));
+        depth = Math.min(depth, MAX_TOC_DEPTH);
+        prevLevel = level;
+        prevDepth = depth;
+        while (stack.length - 1 > depth) stack.pop();
+        const node = { entry, children: [] };
+        stack[stack.length - 1].children.push(node);
+        stack.push(node);
+    });
+    return root;
+}
 
-    let html = `<nav epub:type="toc">
-<ul>
-`;
-    for (const entry of entries) {
-        // After TOC prepend, original page 0 becomes chapter 2 (index + 2)
-        const chapterIdx = entry.pageIdx + 2;
-        const href = `chapter${chapterIdx}.xhtml#${entry.id}`;
-        const margin = (entry.level - 1) * 1.5;
-        html += `  <li style="margin-left:${margin}em"><a href="${htmlEncode(href)}">${htmlEncode(entry.text)}</a></li>\n`;
-    }
-    html += `</ul>
-</nav>`;
+function navTreeDepth(node) {
+    if (node.children.length === 0) return 1;
+    return 1 + Math.max(...node.children.map(navTreeDepth));
+}
 
-    return html;
+function renderNavPoints(root, resolveFile) {
+    let order = 0;
+    const walk = (nodes) => nodes.map((node) => {
+        order += 1;
+        const src = resolveFile(node.entry) + (node.entry.id ? `#${node.entry.id}` : '');
+        return `        <navPoint id="navpoint-${order}" playOrder="${order}">
+            <navLabel><text>${htmlEncode(node.entry.text)}</text></navLabel>
+            <content src="${htmlEncode(src)}"/>
+${walk(node.children)}        </navPoint>`;
+    }).join('\n');
+    return { xml: root.children.length ? walk(root.children) + '\n' : '', count: order };
+}
+
+function renderTocHtml(root, resolveFile) {
+    const walk = (nodes) => nodes.length
+        ? `<ul>\n${nodes.map((node) => {
+            const href = resolveFile(node.entry) + (node.entry.id ? `#${node.entry.id}` : '');
+            return `<li><a href="${htmlEncode(href)}">${htmlEncode(node.entry.text)}</a>\n${walk(node.children)}</li>\n`;
+        }).join('')}</ul>\n`
+        : '';
+    return `<div class="toc">\n${walk(root.children)}</div>`;
 }
 
 async function extractPages(book) {
@@ -661,16 +625,25 @@ export async function generateEpub(book) {
     await extractPages(book);
 
     // ── Auto-generate Table of Contents from headings ────────────────────
-    const tocEntries = buildTocFromPages(book.pages);
+    const tocEntries = await buildTocEntries(book);
     if (tocEntries.length > 0) {
-        const tocHtml = generateTocHtml(tocEntries);
         const tocPage = {
+            isToc: true,
             title: '目录',
-            content: tocHtml,
+            content: '',
             language: book.language,
-            url: book.pages[0]?.url || '',
+            url: '',
         };
         book.pages.unshift(tocPage);
+        // Resolved lazily so the file number follows the final page order
+        // instead of assuming where the TOC page was inserted.
+        const resolveFile = (entry) => `chapter${book.pages.indexOf(entry.page) + 1}.xhtml`;
+        const navRoot = buildNavTree(tocEntries);
+        const nav = renderNavPoints(navRoot, resolveFile);
+        book.tocNavXml = nav.xml;
+        book.tocNavCount = nav.count;
+        book.tocNavDepth = Math.max(1, navTreeDepth(navRoot) - 1);
+        tocPage.content = renderTocHtml(navRoot, resolveFile);
     }
 
     // [{ id, src, type, blob, path }]
@@ -682,7 +655,7 @@ export async function generateEpub(book) {
             const dom = new DOMParser().parseFromString(page.content, 'text/xml');
             const pageImages = dom.querySelectorAll('img');
             pageImages.forEach(img => {
-                const src = img.attributes.src.value;
+                const src = img.getAttribute('src');
                 if (src) {
                     images.push({ id, src });
                     id++;
@@ -759,13 +732,14 @@ function stripExternalLinkBlocks(content, pageUrl) {
             return;
         }
         if (node.nodeValue) {
-            const cleaned = node.nodeValue
-                .replace(new RegExp(BARE_URL_RE.source, 'g'), '')
-                .replace(/\s{2,}/g, ' ')
-                .trim();
+            const stripped = node.nodeValue.replace(new RegExp(BARE_URL_RE.source, 'g'), '');
+            if (stripped === node.nodeValue) {
+                return;
+            }
+            const cleaned = stripped.replace(/\s{2,}/g, ' ').trim();
             if (cleaned === '') {
                 node.remove();
-            } else if (cleaned !== node.nodeValue) {
+            } else {
                 node.nodeValue = cleaned;
             }
         }

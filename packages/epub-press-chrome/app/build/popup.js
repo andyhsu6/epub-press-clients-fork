@@ -49254,7 +49254,364 @@ const extractFromHtml = async (html, url, parserOptions = {}) => {
 // EXTERNAL MODULE: ./node_modules/jszip/dist/jszip.min.js
 var jszip_min = __webpack_require__(1710);
 var jszip_min_default = /*#__PURE__*/__webpack_require__.n(jszip_min);
+;// ./scripts/escape.js
+// Single escaping implementation for every EPUB template interpolation.
+// XML metacharacters reaching toc.ncx / content.opf / chapter*.html make the
+// part unparseable, which in EPUB 2 means the reader rejects the package.
+function encodeXml(input = '') {
+  return String(input).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+;// ./scripts/toc.js
+// Chapter-title detection for the generated table of contents.
+//
+// Kept separate from generater.js so it can be unit-tested, and deliberately
+// scoring-based: clipped pages put the chapter title in whatever place the site
+// felt like (an h1, the first line of one giant <p> full of <br>, a short <p>),
+// so a per-site regex list can never converge.
+
+const CN_DIGIT = {
+  '零': 0,
+  '〇': 0,
+  '一': 1,
+  '二': 2,
+  '三': 3,
+  '四': 4,
+  '五': 5,
+  '六': 6,
+  '七': 7,
+  '八': 8,
+  '九': 9,
+  '两': 2,
+  '壹': 1,
+  '贰': 2,
+  '叁': 3,
+  '肆': 4,
+  '伍': 5,
+  '陆': 6,
+  '柒': 7,
+  '捌': 8,
+  '玖': 9
+};
+const CN_UNIT = {
+  '十': 10,
+  '百': 100,
+  '千': 1000,
+  '拾': 10,
+  '佰': 100,
+  '仟': 1000
+};
+const CN_CHARS = '零〇一二三四五六七八九十百千两壹贰叁肆伍陆柒捌玖拾佰仟'; // 十三 -> 13, 一百二十三 -> 123, 31 -> 31
+
+function parseOrdinal(token) {
+  const s = (token || '').trim();
+  if (/^[0-9]+$/.test(s)) return parseInt(s, 10);
+  let total = 0,
+      current = 0;
+
+  for (const ch of s) {
+    if (CN_DIGIT[ch] !== undefined) {
+      current = CN_DIGIT[ch];
+    } else if (CN_UNIT[ch] !== undefined) {
+      total += (current === 0 ? 1 : current) * CN_UNIT[ch];
+      current = 0;
+    } else {
+      return NaN;
+    }
+  }
+
+  return total + current;
+}
+const ROMAN = {
+  i: 1,
+  v: 5,
+  x: 10,
+  l: 50,
+  c: 100,
+  d: 500,
+  m: 1000
+};
+
+function romanToNum(s) {
+  const str = s.toLowerCase();
+  if (!/^[ivxlcdm]+$/.test(str)) return NaN;
+  let total = 0;
+
+  for (let i = 0; i < str.length; i++) {
+    const v = ROMAN[str[i]];
+    total += v < (ROMAN[str[i + 1]] || 0) ? -v : v;
+  }
+
+  return total;
+} // Numbered-unit rank: globally comparable across merged tabs, unlike heading tags
+// (Readability rewrites a surviving h1 into h2, so tag numbers are not a scale).
+
+
+const UNIT_LEVEL = {
+  '卷': 0,
+  '部': 0,
+  '辑': 0,
+  '篇': 1,
+  '章': 1,
+  '回': 2,
+  '节': 3
+};
+const SEQ_RE = new RegExp(`第\\s*([0-9]+|[${CN_CHARS}]+)\\s*([卷部辑篇章回节])`, 'g');
+const LATIN_RE = new RegExp(`^\\s*(chapter|part|section|book|canto|volume|vol)\\.?\\s+([0-9]+|[ivxlcdm]+)\\b`, 'i');
+const NUMBER_RE = /^\s*([0-9]{1,4})\s*[、.．:：]\s*\S/;
+const CN_NUMBER_RE = new RegExp(`^\\s*([${CN_CHARS}]{1,6})\\s*[、.．:：]\\s*\\S`); // Whole-line part labels that carry no ordinal but are still chapter headings.
+
+const VOCAB_RE = /^\s*(序章|序言|楔子|引子|前言|尾声|后记|後記|终章|終章|大結局|大结局|番外(?:[一二三四五六七八九十\d]+)?|附錄|附录|prologue|epilogue|afterword|introduction)\s*[、.．:：]?\s*$/i;
+const NOISE_RE = /发表于|发布于|更新于|举报|回复|点赞|收藏|分享|广告|下载|下一页|上一页|下一章|上一章|返回目录|加入书签|本章未完|未经允许|copyright|http:|www\.|\.com|\.net/i;
+const SENTENCE_END_RE = /[。！？；，、…”』】）)】]$/;
+const MAX_ENTRIES_PER_PAGE = 500;
+const TITLE_MAX_LEN = 40;
+
+function toc_normalize(s) {
+  return (s || '').replace(/\s+/g, ' ').trim();
+} // Classify one candidate line. Returns null when it carries no ordinal at all.
+
+
+function classify(text) {
+  const t = toc_normalize(text);
+  if (!t) return null;
+  let units = [],
+      ordinals = [];
+  SEQ_RE.lastIndex = 0;
+  let m;
+
+  while ((m = SEQ_RE.exec(t)) !== null) {
+    units.push(m[2]);
+    ordinals.push(parseOrdinal(m[1]));
+  }
+
+  if (units.length) {
+    return {
+      kind: 'seq:' + units.join(''),
+      level: UNIT_LEVEL[units[units.length - 1]],
+      ordinal: ordinals[ordinals.length - 1]
+    };
+  }
+
+  const latin = LATIN_RE.exec(t);
+
+  if (latin) {
+    return {
+      kind: 'latin:' + latin[1].toLowerCase(),
+      level: 1,
+      ordinal: parseOrdinal(latin[2]) || romanToNum(latin[2])
+    };
+  }
+
+  const vocab = VOCAB_RE.exec(t);
+  if (vocab) return {
+    kind: 'vocab',
+    level: 1,
+    ordinal: NaN
+  };
+  const num = NUMBER_RE.exec(t) || CN_NUMBER_RE.exec(t);
+
+  if (num) {
+    return {
+      kind: 'number',
+      level: 1,
+      ordinal: parseOrdinal(num[1])
+    };
+  }
+
+  return null;
+}
+
+function firstLine(el) {
+  let out = '';
+
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeName === 'BR') break;
+    if (node.nodeType === 3 || node.nodeType === 1) out += node.textContent;
+  }
+
+  const line = toc_normalize(out);
+  return line || toc_normalize((el.textContent || '').split('\n')[0]);
+}
+
+function hasDirectBr(el) {
+  return Array.from(el.childNodes).some(n => n.nodeName === 'BR');
+}
+
+function nextBlock(el) {
+  const parent = el.parentElement;
+  if (!parent) return null;
+  const kids = Array.from(parent.children);
+  let i = kids.indexOf(el) + 1;
+
+  while (i < kids.length && !toc_normalize(kids[i].textContent)) i++;
+
+  return kids[i] || null;
+}
+
+function collectCandidates(body) {
+  const out = [];
+  body.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
+    out.push({
+      el: h,
+      text: toc_normalize(h.textContent),
+      mode: 'heading',
+      tag: h.tagName,
+      seen: false
+    });
+  });
+  body.querySelectorAll('p, div, td, li, font, section').forEach(block => {
+    if (block.closest && block.closest('h1,h2,h3,h4,h5,h6')) return;
+    const full = toc_normalize(block.textContent);
+    if (!full) return;
+
+    if (hasDirectBr(block)) {
+      out.push({
+        el: block,
+        text: firstLine(block),
+        mode: 'firstLine',
+        brCount: Array.from(block.childNodes).filter(n => n.nodeName === 'BR').length,
+        tag: block.tagName
+      });
+      return;
+    }
+
+    if (full.length <= TITLE_MAX_LEN) {
+      const next = nextBlock(block);
+      const nextLen = next ? toc_normalize(next.textContent).length : 0;
+      out.push({
+        el: block,
+        text: full,
+        mode: 'shortBlock',
+        followedByLong: nextLen >= 80 && nextLen >= full.length * 4,
+        tag: block.tagName
+      });
+    }
+  });
+  return out.filter(c => c.text);
+}
+
+function score(cand, groupSize) {
+  let score = 0;
+  if (cand.mode === 'heading') score += 3;
+  if (cand.info) score += 2;
+  if (cand.followedByLong) score += 2;
+
+  if (cand.mode === 'firstLine') {
+    if (cand.text.length <= TITLE_MAX_LEN && cand.brCount >= 2) score += 2;
+  }
+
+  if (cand.mode === 'shortBlock') score += 1;
+  if (groupSize >= 2) score += 3;
+  return score;
+} // Group by ordinal shape so that "13 sibling title lines" outweighs any single
+// clever regex: repetition with an increasing counter is the one signal that
+// does not depend on knowing the site.
+
+
+function applyRecurrence(cands) {
+  const groups = new Map();
+  cands.forEach(c => {
+    if (!c.info) return;
+    const list = groups.get(c.info.kind) || [];
+    list.push(c);
+    groups.set(c.info.kind, list);
+  });
+  groups.forEach(list => {
+    let increasing = 0;
+
+    for (let i = 1; i < list.length; i++) {
+      if (list[i].info.ordinal > list[i - 1].info.ordinal) increasing++;
+    }
+
+    const size = list.length >= 2 && increasing >= 1 ? list.length : 1;
+    list.forEach(c => {
+      c.groupSize = size;
+    });
+  });
+  return cands;
+}
+
+function detectChapterTitles(contentHtml, idOffset = 0) {
+  const dom = new DOMParser().parseFromString(contentHtml || '', 'text/html');
+  const body = dom.body;
+  if (!body) return {
+    entries: [],
+    content: contentHtml || ''
+  };
+  let cands = collectCandidates(body).map(c => {
+    c.info = classify(c.text);
+    c.groupSize = 1;
+    return c;
+  });
+  cands = applyRecurrence(cands);
+  const taken = new Set();
+  const picked = cands.filter(c => !NOISE_RE.test(c.text)).filter(c => c.info || c.mode === 'heading').filter(c => {
+    const min = c.mode === 'heading' ? 3 : 4;
+    return score(c, c.groupSize) >= min;
+  }).filter(c => !(c.mode !== 'heading' && SENTENCE_END_RE.test(c.text))).filter(c => {
+    // one entry per element, and never nest a title inside a chosen ancestor
+    const el = c.el;
+    if (taken.has(el)) return false;
+
+    for (const other of taken) {
+      if (other.contains(el) || el.contains(other)) return false;
+    }
+
+    taken.add(el);
+    return true;
+  }).slice(0, MAX_ENTRIES_PER_PAGE);
+  let counter = idOffset;
+  const entries = picked.map(c => {
+    const id = c.el.getAttribute('id') || `toc-h-${counter}`;
+    if (!c.el.getAttribute('id')) c.el.setAttribute('id', `toc-h-${counter}`);
+    counter++;
+    return {
+      text: c.text,
+      level: c.info ? c.info.level : Math.max(0, (parseInt(c.tag[1], 10) || 2) - 2),
+      id
+    };
+  });
+  const serialized = new XMLSerializer().serializeToString(body).replace(/^<body[^>]*>/, '').replace(/<\/body>$/, '');
+  return {
+    entries,
+    content: serialized
+  };
+}
+const SEPARATORS = [' - ', ' — ', ' _ ', ' | ', ' :: ', ' » ', '－', '——']; // Extracted titles are usually "<chapter> - <book> | <site>". Strip the trailing
+// part only when it is provably decoration: it repeats the book title the user
+// typed, or the head already looks like a standalone chapter heading.
+
+function cleanChapterTitle(text, bookTitle) {
+  const t = toc_normalize(text);
+  if (!t) return t;
+
+  const head = s => toc_normalize(s.split(/[。！？]/)[0]);
+
+  for (const sep of SEPARATORS) {
+    const i = t.indexOf(sep);
+    if (i <= 0) continue;
+    const first = t.slice(0, i).trim();
+    const rest = t.slice(i + sep.length).trim();
+    const decorated = bookTitle && toc_normalize(rest).includes(toc_normalize(bookTitle)) || /^[^第0-9]{0,3}(Chapter|卷|部|篇)/i.test(rest) || rest.length > first.length * 1.5;
+    const firstStandsAlone = !!classify(first) || first.length <= 24;
+    if (decorated && firstStandsAlone) return head(first);
+  }
+
+  if (bookTitle) {
+    const bt = toc_normalize(bookTitle);
+
+    if (bt && t.includes(bt)) {
+      const stripped = toc_normalize(t.replace(bt, ' ')).replace(/^[-—_:：|·、\s]+|[-—_:：|·、\s]+$/g, '');
+      if (stripped) return stripped.length > 60 ? toc_normalize(stripped.slice(0, 60)) : stripped;
+    }
+  }
+
+  return t.length > 60 ? toc_normalize(t.slice(0, 60)) : t;
+}
+
 ;// ./scripts/generater.js
+
+
 
  // ─── Auto-Pagination Constants ───────────────────────────────────────────────
 
@@ -49549,9 +49906,9 @@ const template = {
     return `<?xml version="1.0"?>
 <package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId">
     <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
-        <dc:title>${book.title}</dc:title>
-        <dc:language>${book.language}</dc:language>
-        <dc:identifier id="BookId" opf:scheme="uuid">${book.id}</dc:identifier>
+        <dc:title>${htmlEncode(book.title)}</dc:title>
+        <dc:language>${htmlEncode(book.language)}</dc:language>
+        <dc:identifier id="BookId" opf:scheme="uuid">${htmlEncode(book.id)}</dc:identifier>
         <dc:creator opf:file-as="" opf:role="aut">EpubPressX</dc:creator>
         <meta name="cover" content="cover"/>
     </metadata>
@@ -49559,7 +49916,7 @@ const template = {
 ${book.pages.map((page, index) => `        <item id="chapter${index + 1}" href="chapter${index + 1}.xhtml" media-type="application/xhtml+xml"/>`).join('\n')}
         <item id="references" href="references.xhtml" media-type="application/xhtml+xml"/>
         <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-${images.map(image => `        <item id="${image.id}" href="${image.path}" media-type="${image.type}"/>`).join('\n')}
+${images.map(image => `        <item id="${htmlEncode(image.id)}" href="${htmlEncode(image.path)}" media-type="${htmlEncode(image.type)}"/>`).join('\n')}
     </manifest>
     <spine toc="ncx">
 ${book.pages.map((page, index) => `        <itemref idref="chapter${index + 1}" />`).join('\n')}
@@ -49569,25 +49926,21 @@ ${book.pages.map((page, index) => `        <itemref idref="chapter${index + 1}" 
   },
   ['OEBPS/toc.ncx']: function (book) {
     return `<?xml version="1.0" encoding="UTF-8"?>
-<ncx version="2005-1" xml:lang="${book.language}" xmlns="http://www.daisy.org/z3986/2005/ncx/">
+<ncx version="2005-1" xml:lang="${htmlEncode(book.language)}" xmlns="http://www.daisy.org/z3986/2005/ncx/">
     <head>
-        <meta name="dtb:uid" content="${book.id}"/> <!-- same as in .opf -->
-        <meta name="dtb:depth" content="1"/> <!-- 1 or higher -->
+        <meta name="dtb:uid" content="${htmlEncode(book.id)}"/> <!-- same as in .opf -->
+        <meta name="dtb:depth" content="${book.tocNavDepth || 1}"/> <!-- levels of nested navPoints -->
         <meta name="dtb:totalPageCount" content="0"/> <!-- must be 0 -->
         <meta name="dtb:maxPageNumber" content="0"/> <!-- must be 0 -->
     </head>
     <docTitle>
-        <text>${book.title}</text>
+        <text>${htmlEncode(book.title)}</text>
     </docTitle>
     <docAuthor>
         <text>EpubPressX</text>
     </docAuthor>
     <navMap>
-${book.pages.map((page, index) => `        <navPoint id="chapter${index + 1}" playOrder="${index + 1}">
-            <navLabel><text>${page.title}</text></navLabel>
-            <content src="chapter${index + 1}.xhtml"/>
-        </navPoint>`).join('\n')}
-        <navPoint id="references" playOrder="${book.pages.length + 1}">
+${book.tocNavXml || ''}        <navPoint id="references" playOrder="${(book.tocNavCount || 0) + 1}">
             <navLabel><text>References</text></navLabel>
             <content src="references.xhtml"/>
         </navPoint>
@@ -49595,11 +49948,11 @@ ${book.pages.map((page, index) => `        <navPoint id="chapter${index + 1}" pl
 </ncx>`;
   },
   chapter: function (title, content, language) {
-    const languageAttributes = language ? ` lang="${language}" xml:lang="${language}"` : '';
+    const languageAttributes = language ? ` lang="${htmlEncode(language)}" xml:lang="${htmlEncode(language)}"` : '';
     return `<?xml version="1.0" encoding="UTF-8" ?>
 <html xmlns="http://www.w3.org/1999/xhtml"${languageAttributes}>
     <head>
-        <title>${title}</title>
+        <title>${htmlEncode(title)}</title>
         <style>
             body {
                 font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
@@ -49620,7 +49973,7 @@ ${book.pages.map((page, index) => `        <navPoint id="chapter${index + 1}" pl
         </style>
     </head>
     <body>
-        <h2>${title}</h2>
+        <h2>${htmlEncode(title)}</h2>
         ${content}
     </body>
 </html>`;
@@ -49639,7 +49992,7 @@ ${book.pages.map((page, index) => `        <navPoint id="chapter${index + 1}" pl
     <body>
         <h2>References</h2>
         <ol>
-${book.pages.map(page => `            <li><a href="${htmlEncode(page.url)}">${htmlEncode(page.title)} (${htmlEncode(page.url)})</a></li>`).join('\n')}
+${book.pages.filter(page => !page.isToc).map(page => `            <li><a href="${htmlEncode(page.url)}">${htmlEncode(page.title)} (${htmlEncode(page.url)})</a></li>`).join('\n')}
         </ol>
     </body>
 </html>`;
@@ -49647,7 +50000,7 @@ ${book.pages.map(page => `            <li><a href="${htmlEncode(page.url)}">${ht
 };
 
 function htmlEncode(input = '') {
-  return input.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  return encodeXml(input);
 }
 
 function normalizeLanguageTag(language = '') {
@@ -49731,10 +50084,10 @@ function replaceImages(html, images) {
   const dom = new DOMParser().parseFromString(html, 'text/xml');
   const pageImages = dom.querySelectorAll('img');
   pageImages.forEach(image => {
-    const src = image.src;
+    const src = image.getAttribute('src');
 
-    if (srcPathMap[src]) {
-      image.src = srcPathMap[src];
+    if (src && srcPathMap[src]) {
+      image.setAttribute('src', srcPathMap[src]);
     }
   }); // remove <source> tag, because it's not supported in epub
 
@@ -49790,123 +50143,102 @@ function downloadImages(images) {
   });
   return Promise.all(promises);
 } // ─── Auto-Generated Table of Contents ─────────────────────────────────────────
-// Scan extracted content for headings (h1-h4), add anchor IDs, and build a TOC page.
+// Detection lives in toc.js. This section turns its flat level-tagged entries into
+// a tree that both the visible TOC page and toc.ncx render from, so the reader's own
+// outline panel and the in-book contents page cannot disagree.
 
 
-function buildTocFromPages(pages) {
-  const entries = []; // { level, text, id, pageIdx }
+const MAX_TOC_DEPTH = 5;
 
-  let headingCount = 0;
-  pages.forEach((page, pageIdx) => {
-    var _page$content;
+async function buildTocEntries(book) {
+  const entries = [];
+  let idOffset = 0;
 
-    let debug = {
-      pageIdx,
-      contentLen: (_page$content = page.content) === null || _page$content === void 0 ? void 0 : _page$content.length,
-      pCount: 0,
-      hCount: 0,
-      matched: false,
-      err: null
-    };
+  for (const page of book.pages) {
+    const detected = detectChapterTitles(page.content, idOffset);
+    idOffset += detected.entries.length;
+    page.content = detected.content;
 
-    try {
-      const dom = new DOMParser().parseFromString(page.content, 'text/html');
-      const body = dom.body;
-
-      if (!body) {
-        console.log('[TOC] no body', debug);
-        return;
-      } // ── Strategy A: explicit heading tags (h1-h4) ──────────────
-
-
-      const headings = body.querySelectorAll('h1, h2, h3, h4');
-      debug.hCount = headings.length;
-      headings.forEach(h => {
-        const text = (h.textContent || '').trim();
-        if (!text) return;
-        const id = `toc-h-${headingCount}`;
-        h.setAttribute('id', id);
-        entries.push({
-          level: parseInt(h.tagName[1], 10),
-          text,
-          id,
-          pageIdx
-        });
-        headingCount++;
-      }); // ── Strategy B: implicit headings inside <p> tags ───────────
-
-      const paras = body.querySelectorAll('p');
-      debug.pCount = paras.length;
-      paras.forEach(p => {
-        const fullText = (p.textContent || '').trim();
-        if (!fullText) return;
-        if (p.querySelector('h1, h2, h3, h4')) return;
-        let titleText = '';
-        let isHeading = false;
-
-        if (/^第[一二三四五六七八九十零〇百千万\d]+[章节回篇部集]/.test(fullText)) {
-          const html = p.innerHTML;
-          const brIdx = html.indexOf('<br>');
-
-          if (brIdx > 0) {
-            const beforeBr = html.substring(0, brIdx);
-            const tempDoc = new DOMParser().parseFromString(beforeBr, 'text/html');
-            titleText = (tempDoc.body.textContent || '').trim();
-          } else {
-            titleText = fullText;
-          }
-
-          if (titleText) {
-            isHeading = true;
-            debug.matched = true;
-            debug.matchText = titleText.substring(0, 30);
-          }
-        }
-
-        if (isHeading && titleText) {
-          const id = `toc-h-${headingCount}`;
-          p.setAttribute('id', id);
-          entries.push({
-            level: 1,
-            text: titleText,
-            id,
-            pageIdx
-          });
-          headingCount++;
-        }
-      }); // Serialize back
-
-      const serializer = new XMLSerializer();
-      let html = serializer.serializeToString(body);
-      html = html.replace(/^<body[^>]*>/, '').replace(/<\/body>$/, '');
-      page.content = html;
-    } catch (e) {
-      debug.err = e.message;
-      console.log('[TOC] error', debug);
+    if (detected.entries.length === 0) {
+      entries.push({
+        text: cleanChapterTitle(page.title, book.title),
+        level: 0,
+        id: null,
+        page
+      });
+      continue;
     }
 
-    console.log('[TOC] debug', JSON.stringify(debug));
-  });
-  return entries;
-}
-
-function generateTocHtml(entries) {
-  if (entries.length === 0) return '';
-  let html = `<nav epub:type="toc">
-<ul>
-`;
-
-  for (const entry of entries) {
-    // After TOC prepend, original page 0 becomes chapter 2 (index + 2)
-    const chapterIdx = entry.pageIdx + 2;
-    const href = `chapter${chapterIdx}.xhtml#${entry.id}`;
-    const margin = (entry.level - 1) * 1.5;
-    html += `  <li style="margin-left:${margin}em"><a href="${htmlEncode(href)}">${htmlEncode(entry.text)}</a></li>\n`;
+    detected.entries.forEach(e => entries.push({
+      text: e.text,
+      level: e.level,
+      id: e.id,
+      page
+    }));
   }
 
-  html += `</ul>
-</nav>`;
-  return html;
+  return entries;
+} // Only the *change* in level is meaningful: heading tags are not a shared scale
+// across merged pages, because a surviving h1 gets rewritten to h2 upstream.
+
+
+function buildNavTree(entries) {
+  const root = {
+    children: []
+  };
+  const stack = [root];
+  let prevLevel = null;
+  let prevDepth = 0;
+  entries.forEach(entry => {
+    const level = Number.isFinite(entry.level) ? Math.max(0, entry.level) : 0;
+    let depth;
+    if (prevLevel === null) depth = 0;else if (level > prevLevel) depth = prevDepth + 1;else if (level === prevLevel) depth = prevDepth;else depth = Math.max(0, prevDepth - (prevLevel - level));
+    depth = Math.min(depth, MAX_TOC_DEPTH);
+    prevLevel = level;
+    prevDepth = depth;
+
+    while (stack.length - 1 > depth) stack.pop();
+
+    const node = {
+      entry,
+      children: []
+    };
+    stack[stack.length - 1].children.push(node);
+    stack.push(node);
+  });
+  return root;
+}
+
+function navTreeDepth(node) {
+  if (node.children.length === 0) return 1;
+  return 1 + Math.max(...node.children.map(navTreeDepth));
+}
+
+function renderNavPoints(root, resolveFile) {
+  let order = 0;
+
+  const walk = nodes => nodes.map(node => {
+    order += 1;
+    const src = resolveFile(node.entry) + (node.entry.id ? `#${node.entry.id}` : '');
+    return `        <navPoint id="navpoint-${order}" playOrder="${order}">
+            <navLabel><text>${htmlEncode(node.entry.text)}</text></navLabel>
+            <content src="${htmlEncode(src)}"/>
+${walk(node.children)}        </navPoint>`;
+  }).join('\n');
+
+  return {
+    xml: root.children.length ? walk(root.children) + '\n' : '',
+    count: order
+  };
+}
+
+function renderTocHtml(root, resolveFile) {
+  const walk = nodes => nodes.length ? `<ul>\n${nodes.map(node => {
+    const href = resolveFile(node.entry) + (node.entry.id ? `#${node.entry.id}` : '');
+    return `<li><a href="${htmlEncode(href)}">${htmlEncode(node.entry.text)}</a>\n${walk(node.children)}</li>\n`;
+  }).join('')}</ul>\n` : '';
+
+  return `<div class="toc">\n${walk(root.children)}</div>`;
 }
 
 async function extractPages(book) {
@@ -49938,19 +50270,27 @@ async function generateEpub(book) {
 
   await extractPages(book); // ── Auto-generate Table of Contents from headings ────────────────────
 
-  const tocEntries = buildTocFromPages(book.pages);
+  const tocEntries = await buildTocEntries(book);
 
   if (tocEntries.length > 0) {
-    var _book$pages$;
-
-    const tocHtml = generateTocHtml(tocEntries);
     const tocPage = {
+      isToc: true,
       title: '目录',
-      content: tocHtml,
+      content: '',
       language: book.language,
-      url: ((_book$pages$ = book.pages[0]) === null || _book$pages$ === void 0 ? void 0 : _book$pages$.url) || ''
+      url: ''
     };
-    book.pages.unshift(tocPage);
+    book.pages.unshift(tocPage); // Resolved lazily so the file number follows the final page order
+    // instead of assuming where the TOC page was inserted.
+
+    const resolveFile = entry => `chapter${book.pages.indexOf(entry.page) + 1}.xhtml`;
+
+    const navRoot = buildNavTree(tocEntries);
+    const nav = renderNavPoints(navRoot, resolveFile);
+    book.tocNavXml = nav.xml;
+    book.tocNavCount = nav.count;
+    book.tocNavDepth = Math.max(1, navTreeDepth(navRoot) - 1);
+    tocPage.content = renderTocHtml(navRoot, resolveFile);
   } // [{ id, src, type, blob, path }]
 
 
@@ -49963,7 +50303,7 @@ async function generateEpub(book) {
       const dom = new DOMParser().parseFromString(page.content, 'text/xml');
       const pageImages = dom.querySelectorAll('img');
       pageImages.forEach(img => {
-        const src = img.attributes.src.value;
+        const src = img.getAttribute('src');
 
         if (src) {
           images.push({
@@ -50053,11 +50393,17 @@ function stripExternalLinkBlocks(content, pageUrl) {
     }
 
     if (node.nodeValue) {
-      const cleaned = node.nodeValue.replace(new RegExp(BARE_URL_RE.source, 'g'), '').replace(/\s{2,}/g, ' ').trim();
+      const stripped = node.nodeValue.replace(new RegExp(BARE_URL_RE.source, 'g'), '');
+
+      if (stripped === node.nodeValue) {
+        return;
+      }
+
+      const cleaned = stripped.replace(/\s{2,}/g, ' ').trim();
 
       if (cleaned === '') {
         node.remove();
-      } else if (cleaned !== node.nodeValue) {
+      } else {
         node.nodeValue = cleaned;
       }
     }

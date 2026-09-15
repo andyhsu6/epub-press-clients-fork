@@ -7,6 +7,7 @@
         "build": "cross-env ENV=development && webpack",
         "webpackVer": "webpack --version",
         "build-prod": "cross-env NODE_ENV=production && webpack",
+        "package": "node scripts/package.mjs",
         "start": "cross-env ENV=development && webpack --watch --color --progress"
     },
     "repository": {
