@@ -34345,6 +34345,10 @@ class UI {
     $('#alert-message').text(message);
   }
 
+  static setPaginationSummary(text) {
+    $('#pagination-summary').text(text);
+  }
+
   static updateStatus(progress, message) {
     $('h4#progress-msg').text(message);
 
@@ -49830,15 +49834,32 @@ async function extractWithPagination(html, url) {
   let currentHtml = html;
   let pageCount = 1;
   const fetchedUrls = new Set([url]); // track visited URLs to prevent loops
+  // ── Stop-reason recording (observability only — no control flow change) ──
+  // `null` means no explicit break ran, i.e. the while condition ended the loop.
+
+  let stopReason = null;
+  let status = null;
+  let lastUrl = url;
+  let error = null;
 
   while (pageCount < MAX_PAGINATION_PAGES) {
     const nextUrl = findNextPageUrl(currentHtml, currentUrl);
-    if (!nextUrl || nextUrl === currentUrl) break; // Skip URLs we've already seen (prevents loops from URL inference)
 
-    if (fetchedUrls.has(nextUrl)) break;
+    if (!nextUrl || nextUrl === currentUrl) {
+      stopReason = 'complete';
+      break;
+    } // Skip URLs we've already seen (prevents loops from URL inference)
+
+
+    if (fetchedUrls.has(nextUrl)) {
+      stopReason = 'already-visited';
+      break;
+    }
+
     fetchedUrls.add(nextUrl);
 
     try {
+      lastUrl = nextUrl;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), PAGINATION_TIMEOUT_MS);
       const resp = await fetch(nextUrl, {
@@ -49847,26 +49868,53 @@ async function extractWithPagination(html, url) {
 
       });
       clearTimeout(timeoutId);
-      if (!resp.ok) break;
+      status = resp.status;
+
+      if (!resp.ok) {
+        stopReason = 'http-error';
+        break;
+      }
+
       const nextHtml = await resp.text();
       const nextPage = await extractFromHtml(nextHtml, nextUrl);
-      if (!nextPage || !nextPage.content) break; // Dedup: if the new content is identical to the last page, stop
+
+      if (!nextPage || !nextPage.content) {
+        stopReason = 'empty-page';
+        break;
+      } // Dedup: if the new content is identical to the last page, stop
+
 
       const lastContent = allContent[allContent.length - 1];
-      if (normalizeWhitespace(nextPage.content) === normalizeWhitespace(lastContent)) break;
+
+      if (normalizeWhitespace(nextPage.content) === normalizeWhitespace(lastContent)) {
+        stopReason = 'duplicate-page';
+        break;
+      }
+
       allContent.push(nextPage.content);
       currentUrl = nextUrl;
       currentHtml = nextHtml;
       pageCount++;
-    } catch (_unused) {
+    } catch (err) {
+      stopReason = err && err.name === 'AbortError' ? 'timeout' : 'fetch-failed';
+      error = err && err.message || String(err);
       break; // network error or timeout — stop pagination gracefully
     }
   }
+
+  if (stopReason === null) stopReason = 'page-limit';
 
   if (pageCount > 1) {
     page.content = allContent.join('\n<!-- pagination-break -->\n');
   }
 
+  page.pagination = {
+    pagesMerged: pageCount,
+    stopReason,
+    status,
+    lastUrl,
+    error
+  };
   return page;
 }
 
@@ -50245,9 +50293,10 @@ async function extractPages(book) {
   initSanitize(book.includeImages);
   book.id = `book-${Date.now()}`;
   book.pages = [];
+  book.pagination = [];
   const sectionLanguages = [];
 
-  for (const section of book.sections) {
+  for (const [sectionIndex, section] of book.sections.entries()) {
     const page = await extractWithPagination(section.html, section.url);
 
     if (page) {
@@ -50259,6 +50308,23 @@ async function extractPages(book) {
       }
 
       book.pages.push(page);
+      book.pagination.push({
+        sectionIndex,
+        sectionUrl: section.url,
+        title: page.title,
+        ...page.pagination
+      });
+    } else {
+      book.pagination.push({
+        sectionIndex,
+        sectionUrl: section.url,
+        title: null,
+        pagesMerged: 0,
+        stopReason: 'no-article',
+        status: null,
+        lastUrl: section.url,
+        error: null
+      });
     }
   }
 
@@ -50357,7 +50423,7 @@ async function generateEpub(book) {
 function generater_getDomain(url) {
   try {
     return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
-  } catch (_unused2) {
+  } catch (_unused) {
     return null;
   }
 } // CJK punctuation terminates a bare URL so no stray punctuation is left behind.
@@ -50549,6 +50615,36 @@ jquery_default()('#select-none').click(() => {
   });
   updateSelectedCount();
 });
+const PAGINATION_STOP_REASON_KEYS = {
+  complete: 'textPaginationStopComplete',
+  'page-limit': 'textPaginationStopPageLimit',
+  'already-visited': 'textPaginationStopAlreadyVisited',
+  'http-error': 'textPaginationStopHttpError',
+  'empty-page': 'textPaginationStopEmptyPage',
+  'duplicate-page': 'textPaginationStopDuplicatePage',
+  'fetch-failed': 'textPaginationStopFetchFailed',
+  'no-article': 'textPaginationStopNoArticle',
+  timeout: 'textPaginationStopTimeout'
+};
+/**
+ * One localized line describing the pagination outcome recorded on
+ * book.pagination while the book was generated.
+ */
+
+function renderPaginationSummary(book) {
+  const entries = book.pagination;
+  const stopped = entries.find(entry => entry.stopReason !== 'complete');
+
+  if (stopped) {
+    const reasonKey = PAGINATION_STOP_REASON_KEYS[stopped.stopReason];
+    const reason = reasonKey ? chrome.i18n.getMessage(reasonKey) : stopped.stopReason;
+    return chrome.i18n.getMessage('textPaginationSummaryStopped', [String(stopped.title || stopped.sectionUrl), String(stopped.pagesMerged), String(reason)]);
+  }
+
+  const pages = entries.reduce((sum, entry) => sum + entry.pagesMerged, 0);
+  return chrome.i18n.getMessage('textPaginationSummaryAll', [String(pages), String(entries.length)]);
+}
+
 jquery_default()('#download').click(() => {
   const selectedItems = [];
   jquery_default()('input.article-checkbox').each((index, checkbox) => {
@@ -50577,6 +50673,7 @@ jquery_default()('#download').click(() => {
         sections
       };
       FORMATS[format](book).then(async blob => {
+        ui.setPaginationSummary(renderPaginationSummary(book));
         const url = await browser.blobToDataUrl(blob);
         chrome.downloads.download({
           url,
@@ -50590,6 +50687,9 @@ jquery_default()('#download').click(() => {
             ui.showSection('#downloadSuccess');
           }
         });
+      }).catch(error => {
+        ui.setErrorMessage(chrome.i18n.getMessage('textGenerateFailed', [String(error)]));
+        ui.showSection('#downloadFailed');
       });
     }).catch(error => {
       ui.setErrorMessage(`Could not find tab content: ${error}`);
