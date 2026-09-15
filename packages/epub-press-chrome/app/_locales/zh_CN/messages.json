@@ -113,6 +113,10 @@
         "message": "未提取到正文",
         "description": "Pagination stop reason: no article could be extracted for the section."
     },
+    "textPaginationStopTimeout": {
+        "message": "请求超时",
+        "description": "Pagination stop reason: fetching the next page timed out."
+    },
     "textGenerateFailed": {
         "message": "导出失败：$ERROR$",
         "description": "Shown when book generation throws an unexpected error.",

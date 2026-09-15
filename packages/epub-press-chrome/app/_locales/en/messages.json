@@ -113,6 +113,10 @@
         "message": "no article",
         "description": "Pagination stop reason: no article could be extracted for the section."
     },
+    "textPaginationStopTimeout": {
+        "message": "timed out",
+        "description": "Pagination stop reason: fetching the next page timed out."
+    },
     "textGenerateFailed": {
         "message": "Export failed: $ERROR$",
         "description": "Shown when book generation throws an unexpected error.",

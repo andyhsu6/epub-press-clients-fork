@@ -112,6 +112,7 @@ const PAGINATION_STOP_REASON_KEYS = {
     'duplicate-page': 'textPaginationStopDuplicatePage',
     'fetch-failed': 'textPaginationStopFetchFailed',
     'no-article': 'textPaginationStopNoArticle',
+    timeout: 'textPaginationStopTimeout',
 };
 
 /**
