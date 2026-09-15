@@ -53,5 +53,73 @@
     "textNoItems": {
         "message": "没有选中的页面！",
         "description": "No items selected."
+    },
+    "textPaginationSummaryAll": {
+        "message": "已合并 $PAGES$ 页，来自 $COUNT$ 个来源。",
+        "description": "Pagination summary shown after a successful export when every section completed.",
+        "placeholders": {
+            "pages": {
+                "content": "$1"
+            },
+            "count": {
+                "content": "$2"
+            }
+        }
+    },
+    "textPaginationSummaryStopped": {
+        "message": "$TITLE$：已合并 $PAGES$ 页，已停止：$REASON$。",
+        "description": "Pagination summary shown after an export when at least one section stopped early.",
+        "placeholders": {
+            "title": {
+                "content": "$1"
+            },
+            "pages": {
+                "content": "$2"
+            },
+            "reason": {
+                "content": "$3"
+            }
+        }
+    },
+    "textPaginationStopComplete": {
+        "message": "已完成",
+        "description": "Pagination stop reason: the article ended naturally."
+    },
+    "textPaginationStopPageLimit": {
+        "message": "达到页数上限",
+        "description": "Pagination stop reason: the maximum page count was reached."
+    },
+    "textPaginationStopAlreadyVisited": {
+        "message": "页面已访问过",
+        "description": "Pagination stop reason: the next page URL was already visited."
+    },
+    "textPaginationStopHttpError": {
+        "message": "HTTP 错误",
+        "description": "Pagination stop reason: the next page returned an HTTP error status."
+    },
+    "textPaginationStopEmptyPage": {
+        "message": "空页面",
+        "description": "Pagination stop reason: the next page produced no article content."
+    },
+    "textPaginationStopDuplicatePage": {
+        "message": "重复页面",
+        "description": "Pagination stop reason: the next page duplicated the previous page."
+    },
+    "textPaginationStopFetchFailed": {
+        "message": "请求失败",
+        "description": "Pagination stop reason: fetching the next page failed."
+    },
+    "textPaginationStopNoArticle": {
+        "message": "未提取到正文",
+        "description": "Pagination stop reason: no article could be extracted for the section."
+    },
+    "textGenerateFailed": {
+        "message": "导出失败：$ERROR$",
+        "description": "Shown when book generation throws an unexpected error.",
+        "placeholders": {
+            "error": {
+                "content": "$1"
+            }
+        }
     }
 }
