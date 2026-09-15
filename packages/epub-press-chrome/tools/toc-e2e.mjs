@@ -2,11 +2,18 @@
 // headless Brave, open the TOC fixtures as tabs, drive the real popup UI, and
 // inspect the .epub that the bundled code actually produces.
 //
-//   node tools/toc-e2e.mjs [fixture ...]        (defaults to all three)
+// Default run = the base fixture book plus one book per merged-pagination
+// family (pag-page-1, np-page-1); those single-tab books must contain the
+// page-2/3 sentinels and exactly two `<!-- pagination-break -->` markers, and
+// the popup's #pagination-summary must be non-empty, all read from the real
+// DOM and the real produced .epub.
+//
+//   node tools/toc-e2e.mjs [fixture ...]        (explicit fixtures = one book)
 //   TOC_E2E_HEADED=1 ...                        (if headless refuses extensions)
 //   TOC_E2E_PORT=9225
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,10 +28,26 @@ const HTTP_PORT = 8901;
 const CDP_PORT = Number(process.env.TOC_E2E_PORT) || 9225;
 const HEADLESS = process.env.TOC_E2E_HEADED !== '1';
 
+// Fresh temp profile per run: no state leaks in from a previously loaded
+// extension instance. (It follows that this harness structurally CANNOT detect
+// a stale already-loaded extension - that is what DEPLOYMENT.md's
+// delete-and-re-add discipline is for.)
+const PROFILE = mkdtempSync(join(tmpdir(), 'toc-e2e-profile-'));
+
 const ONE_PER_BOOK = process.argv.includes('--one-per-book');
 const DEFAULT_FIXTURES = ['ibbs-forum-13chapters.html', 'uaa-reader-h1.html', 'long-title-lines.html', 'multi-heading.html', 'standalone-p-titles.html'];
+// Merged-pagination families: opening page 1 makes the product's own
+// findNextPageUrl walk page 2 and 3 as real HTTP requests against the fixture
+// server, and the produced chapter must carry all three sentinels.
+const PAGINATED_FAMILIES = [
+  { root: 'pag-page-1.html', sentinels: ['PAGE1SENTINEL', 'PAGE2SENTINEL', 'PAGE3SENTINEL'] },
+  { root: 'np-page-1.html', sentinels: ['NPSENT1', 'NPSENT2', 'NPSENT3'] },
+];
+const MERGE_MARKER = '<!-- pagination-break -->';
 const fixtures = process.argv.filter((a) => a.endsWith('.html'));
+const explicitFixtures = fixtures.length > 0;
 if (!fixtures.length) fixtures.push(...DEFAULT_FIXTURES);
+console.log('[e2e] profile:', PROFILE);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -91,7 +114,7 @@ const server = spawn('python3', ['-m', 'http.server', String(HTTP_PORT), '--dire
 const brave = spawn(BRAVE, [
   ...(HEADLESS ? ['--headless=new'] : []),
   '--disable-gpu', '--no-sandbox', '--fingerprinting-protection=0',
-  `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=/tmp/brave-e2e-profile`,
+  `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${PROFILE}`,
   `--disable-extensions-except=${APP}`, `--load-extension=${APP}`,
   'about:blank',
 ], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -119,7 +142,9 @@ try {
   });
   console.log('[e2e] extension id:', extId);
 
-  const runs = ONE_PER_BOOK ? fixtures.map((f) => [f]) : [fixtures];
+  const runs = ONE_PER_BOOK
+    ? fixtures.map((f) => [f])
+    : (explicitFixtures ? [fixtures] : [fixtures, ...PAGINATED_FAMILIES.map((f) => [f.root])]);
   for (const group of runs) {
     console.log(`\n########## book from: ${group.join(' + ')}`);
     const pages = [];
@@ -144,10 +169,21 @@ try {
       });
       document.querySelector('#download').click();
       const opts = await capture;
-      return opts ? { filename: opts.filename, url: opts.url } : null;
+      const summary = document.querySelector('#pagination-summary');
+      return opts ? {
+        filename: opts.filename,
+        url: opts.url,
+        summaryElement: !!summary,
+        summaryText: summary ? summary.textContent : null,
+      } : null;
     })()`);
     if (!dataUrl) throw new Error('popup never called chrome.downloads.download');
     console.log('[e2e] download requested as:', dataUrl.filename);
+    if (!dataUrl.summaryElement) throw new Error('popup has no #pagination-summary element');
+    if (!dataUrl.summaryText || !dataUrl.summaryText.trim()) {
+      throw new Error('#pagination-summary is present but EMPTY after the export completed');
+    }
+    console.log('[e2e] #pagination-summary =', JSON.stringify(dataUrl.summaryText));
 
     const buf = Buffer.from(dataUrl.url.split(',')[1], 'base64');
     const label = group.map((f) => basename(f, '.html')).join('+');
@@ -170,6 +206,33 @@ try {
       '| navPoints =', (ncx.match(/<navPoint/g) || []).length,
       '| fragment links =', links.length, '| dead =', dead.length ? dead.join(',') : 'none',
       '| parsererror =', deadParts.length ? deadParts.join(',') : 'none');
+
+    const family = group.length === 1 ? PAGINATED_FAMILIES.find((f) => f.root === group[0]) : null;
+    if (family) {
+      // The auto-TOC page also mentions every sentinel once, so the merged
+      // article is the chapter carrying the merge markers; the sentinel count
+      // only breaks ties (e.g. when the merge failed and no markers exist).
+      const scored = Object.entries(parts).map(([name, xml]) => ({
+        name,
+        xml,
+        markers: xml.split(MERGE_MARKER).length - 1,
+        hits: family.sentinels.reduce((n, s) => n + (xml.split(s).length - 1), 0),
+      })).sort((a, b) => (b.markers - a.markers) || (b.hits - a.hits));
+      const article = scored[0];
+      if (!article || article.hits === 0) {
+        throw new Error(`FAILED merged pagination for ${family.root}: no chapter contains ${family.sentinels[0]}`);
+      }
+      const missing = family.sentinels.filter((s) => !article.xml.includes(s));
+      console.log(`[e2e] merged-pagination ${family.root}: article=${article.name} ` +
+        `markers=${article.markers} (expected 2) missing=${missing.length ? missing.join(',') : 'none'}`);
+      if (missing.length) {
+        throw new Error(`FAILED merged pagination for ${family.root}: ${missing.join(', ')} missing from ${article.name}`);
+      }
+      if (article.markers !== 2) {
+        throw new Error(`FAILED merged pagination for ${family.root}: expected exactly 2 '${MERGE_MARKER}' in ${article.name}, got ${article.markers}`);
+      }
+    }
+
     await cdp.closePage(popup.targetId).catch(() => {});
     for (const p of pages) await cdp.closePage(p.targetId).catch(() => {});
   }
@@ -180,5 +243,8 @@ try {
 } finally {
   brave.kill();
   server.kill();
-  setTimeout(() => process.exit(exitCode), 500);
+  setTimeout(() => {
+    try { rmSync(PROFILE, { recursive: true, force: true }); } catch { /* brave may still hold it */ }
+    process.exit(exitCode);
+  }, 1000);
 }
