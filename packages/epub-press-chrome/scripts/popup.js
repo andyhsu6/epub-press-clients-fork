@@ -103,6 +103,37 @@ $('#select-none').click(() => {
     updateSelectedCount();
 });
 
+const PAGINATION_STOP_REASON_KEYS = {
+    complete: 'textPaginationStopComplete',
+    'page-limit': 'textPaginationStopPageLimit',
+    'already-visited': 'textPaginationStopAlreadyVisited',
+    'http-error': 'textPaginationStopHttpError',
+    'empty-page': 'textPaginationStopEmptyPage',
+    'duplicate-page': 'textPaginationStopDuplicatePage',
+    'fetch-failed': 'textPaginationStopFetchFailed',
+    'no-article': 'textPaginationStopNoArticle',
+};
+
+/**
+ * One localized line describing the pagination outcome recorded on
+ * book.pagination while the book was generated.
+ */
+function renderPaginationSummary(book) {
+    const entries = book.pagination;
+    const stopped = entries.find((entry) => entry.stopReason !== 'complete');
+    if (stopped) {
+        const reasonKey = PAGINATION_STOP_REASON_KEYS[stopped.stopReason];
+        const reason = reasonKey ? chrome.i18n.getMessage(reasonKey) : stopped.stopReason;
+        return chrome.i18n.getMessage('textPaginationSummaryStopped', [
+            String(stopped.title || stopped.sectionUrl),
+            String(stopped.pagesMerged),
+            String(reason),
+        ]);
+    }
+    const pages = entries.reduce((sum, entry) => sum + entry.pagesMerged, 0);
+    return chrome.i18n.getMessage('textPaginationSummaryAll', [String(pages), String(entries.length)]);
+}
+
 $('#download').click(() => {
     const selectedItems = [];
     $('input.article-checkbox').each((index, checkbox) => {
@@ -133,6 +164,7 @@ $('#download').click(() => {
                 sections,
             };
             FORMATS[format](book).then(async (blob) => {
+                UI.setPaginationSummary(renderPaginationSummary(book));
                 const url = await Browser.blobToDataUrl(blob);
                 chrome.downloads.download({
                     url,
@@ -146,6 +178,9 @@ $('#download').click(() => {
                         UI.showSection('#downloadSuccess');
                     }
                 });
+            }).catch((error) => {
+                UI.setErrorMessage(chrome.i18n.getMessage('textGenerateFailed', [String(error)]));
+                UI.showSection('#downloadFailed');
             });
         }).catch((error) => {
             UI.setErrorMessage(`Could not find tab content: ${error}`);

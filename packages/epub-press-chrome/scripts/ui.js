@@ -27,6 +27,10 @@ class UI {
         $('#alert-message').text(message);
     }
 
+    static setPaginationSummary(text) {
+        $('#pagination-summary').text(text);
+    }
+
     static updateStatus(progress, message) {
         $('h4#progress-msg').text(message);
         if (progress) {
