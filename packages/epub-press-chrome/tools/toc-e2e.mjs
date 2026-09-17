@@ -13,6 +13,11 @@
 // with raw regex and node by node. The last book of the default run is
 // volume-carryover-e2e.html, whose only source of nesting is the volume
 // carry-over, so a stale app/build bundle fails there (see VOLUME_FIXTURE).
+// That book additionally carries a shape lock (4 parents, child counts
+// {76,40,89,6}) — but only when it is a book of its own. Grouped with another
+// fixture its outline legitimately contains that fixture's rows too, so the lock
+// prints "skipped (book grouped with others)" and the nesting-existence and
+// ncx-vs-page assertions still run.
 //
 //   node tools/toc-e2e.mjs [fixture ...]        (explicit fixtures = one book)
 //   node tools/toc-e2e.mjs --one-per-book       (each fixture a book of its own;
@@ -23,7 +28,11 @@
 //   TOC_E2E_SKIP_VOLUME=1                       (opt out of the discriminator gate
 //                                                below; default: any run whose books
 //                                                never include VOLUME_FIXTURE aborts
-//                                                BEFORE the browser starts)
+//                                                BEFORE the browser starts. A run that
+//                                                does skip ends with a loud
+//                                                "volume discriminator: SKIPPED" banner
+//                                                and keeps exit code 0 — it passes, it
+//                                                just does not prove the bundle is fresh.)
 //   TOC_E2E_VERBOSE=1                           (print the full navMap for every
 //                                                book; by default the per-line dump
 //                                                is suppressed above 60 navPoints)
@@ -251,8 +260,13 @@ try {
   // A green run without it proves nothing about the carry-over, so refuse to
   // even start the browser for one; the throw follows the probe's normal
   // failure path (catch -> exitCode 1) below.
+  // STARTUP_SKIPPED records that the bypass really took effect (TOC_E2E_SKIP_VOLUME=1
+  // with no volume book in any run) — the flag is what the closing banner prints, so
+  // the bypass cannot be lost in the middle of a long log.
+  let STARTUP_SKIPPED = false;
   if (!runs.some(isVolumeBook)) {
     if (SKIP_VOLUME) {
+      STARTUP_SKIPPED = true;
       console.log('[e2e] volume discriminator: SKIPPED for this whole run'
         + ' (TOC_E2E_SKIP_VOLUME=1) — the stale-bundle discriminator is NOT covered by it');
     } else {
@@ -402,6 +416,14 @@ try {
     // book: there, the sole source of a second level is splitVolumeEntry's
     // volume parent (scripts/toc.js:72), which an unbuilt bundle never had.
     const requiresNesting = isVolumeBook(group);
+    // (2b) Shape lock — only while the volume book is ALONE in the group.
+    // Grouping it with another fixture is a documented usage (the zero-coverage
+    // gate even advises "pass it explicitly"), and then the outline legitimately
+    // carries that fixture's rows too: parents and child counts are NOT
+    // {76,40,89,6} by construction, so applying the lock there is a false red.
+    // The nesting-existence check above still runs for mixed groups, as do the
+    // count and node-for-node tree comparisons below.
+    const shapeLock = requiresNesting && group.length === 1;
     const tocNested = treeDepth(tocRoot) >= 2;
     if (requiresNesting && !tocNested) {
       throw new Error(`FAILED [${label}] the TOC page is FLAT: no parent <li> contains a child <li> `
@@ -409,13 +431,13 @@ try {
         + `Volume carry-over never ran — app/build/popup.js is STALE; rebuild it with 'npm run build'.`);
     }
 
-    // (2b) Shape lock for exactly that book: the stale bundle is FLAT (0
+    // Shape lock for exactly that book: the stale bundle is FLAT (0
     // parents), but "not flat" alone would also pass a half-broken carry-over.
     // Measured on the rebuilt bundle (t9 evidence) and equal to the T7 node
     // suite's declared label spans 1-76/77-116/117-205/206-211 (sum 211).
     // Read from tocParents — the same parse that feeds the two-tree comparison,
     // no extra parser.
-    if (requiresNesting) {
+    if (shapeLock) {
       const WANT_KIDS = [76, 40, 89, 6];
       const gotKids = tocParents.map((p) => p.kids);
       const multiset = (xs) => [...xs].sort((a, b) => a - b).join(',');
@@ -454,6 +476,8 @@ try {
       row('tree depth (1 = flat)', `${String(treeDepth(ncxRoot)).padEnd(18)}${treeDepth(tocRoot)}`),
       row('parent nodes', `${String(ncxParents.length).padEnd(18)}${tocParents.length}`),
       row('dtb:depth / nesting', `${String(depth).padEnd(18)}nested <li> present = ${tocNested}`),
+      row('nesting shape lock', shapeLock ? 'APPLIED (4 parents, child counts {76,40,89,6})'
+        : requiresNesting ? 'skipped (book grouped with others)' : 'n/a (not the volume book)'),
       row('trees identical node-for-node', `${(ncxSig === tocSig ? 'YES' : 'NO').padEnd(18)}${ncxSig.split('\n').length} rows compared`),
     ];
     if (tocParents.length) {
@@ -499,6 +523,16 @@ try {
 
     await cdp.closePage(popup.targetId).catch(() => {});
     for (const p of pages) await cdp.closePage(p.targetId).catch(() => {});
+  }
+
+  // Tail banner for the bypass: the STARTUP_SKIPPED note scrolls far away in a
+  // 300-line run, and a green exit code is otherwise read as "bundle verified".
+  // Exit code stays 0 on purpose (the review asked for visibility, not a verdict
+  // change) — what this run does NOT cover is stated where it cannot be missed.
+  if (STARTUP_SKIPPED) {
+    console.log('\n' + '*'.repeat(78));
+    console.log('[e2e] volume discriminator: SKIPPED — this run does NOT prove the bundle is fresh');
+    console.log('*'.repeat(78));
   }
 } catch (err) {
   exitCode = 1;
