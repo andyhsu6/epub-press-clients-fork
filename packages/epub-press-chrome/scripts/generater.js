@@ -1,7 +1,7 @@
 import { extractFromHtml, getSanitizeHtmlOptions, setSanitizeHtmlOptions } from '@extractus/article-extractor'
 import JSZip from 'jszip';
 import { encodeXml } from './escape.js';
-import { detectChapterTitles, cleanChapterTitle } from './toc.js';
+import { detectChapterTitles, cleanChapterTitle, splitVolumeEntry } from './toc.js';
 
 // ─── Auto-Pagination Constants ───────────────────────────────────────────────
 const MAX_PAGINATION_PAGES = 50;       // safety limit to prevent infinite loops
@@ -547,18 +547,56 @@ function downloadImages(images) {
 
 const MAX_TOC_DEPTH = 5;
 
+let currentVolume = null; // { key, text, childLevel }
+
+function hostOf(url) {
+    try { return new URL(url).host; } catch { return null; }
+}
+
 async function buildTocEntries(book) {
     const entries = [];
     let idOffset = 0;
+    currentVolume = null;
     for (const page of book.pages) {
         const detected = detectChapterTitles(page.content, idOffset);
         idOffset += detected.entries.length;
         page.content = detected.content;
+
+        const pageHost = hostOf(page.url);
+        if (pageHost && currentVolume && currentVolume.host && pageHost !== currentVolume.host) {
+            currentVolume = null; // different host → clear context
+        }
+
         if (detected.entries.length === 0) {
-            entries.push({ text: cleanChapterTitle(page.title, book.title), level: 0, id: null, page });
+            const fbText = cleanChapterTitle(page.title, book.title);
+            const fbLevel = currentVolume ? currentVolume.childLevel : 0;
+            entries.push({ text: fbText, level: fbLevel, id: null, page });
+            if (pageHost && currentVolume) currentVolume.host = pageHost;
             continue;
         }
-        detected.entries.forEach((e) => entries.push({ text: e.text, level: e.level, id: e.id, page }));
+
+        detected.entries.forEach((e) => {
+            const split = e.kind ? splitVolumeEntry(e.text, e.kind) : null;
+            if (split) {
+                if (!currentVolume || currentVolume.key !== split.volumeKey) {
+                    entries.push({
+                        text: split.volumeText,
+                        level: 0,
+                        id: e.id,
+                        page,
+                    });
+                    currentVolume = {
+                        key: split.volumeKey,
+                        text: split.volumeText,
+                        childLevel: e.level,
+                        host: pageHost || currentVolume?.host || null,
+                    };
+                }
+                entries.push({ text: split.chapterText, level: e.level, id: e.id, page });
+            } else {
+                entries.push({ text: e.text, level: e.level, id: e.id, page });
+            }
+        });
     }
     return entries;
 }
