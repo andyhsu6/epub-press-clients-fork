@@ -61,6 +61,54 @@ const SENTENCE_END_RE = /[。！？；，、…”』】）)】]$/;
 const MAX_ENTRIES_PER_PAGE = 500;
 const TITLE_MAX_LEN = 40;
 
+// Split an inline volume+chapter label into parent (volume) and child (chapter).
+// Returns null when the label has no volume-level prefix to split off.
+// Decision table:
+//   1. kind is not seq: → null
+//   2. last unit is not 章/回/节 → null (no chapter marker)
+//   3. prefix before the last chapter marker is empty → null
+//   4. prefix has no volume-level marker (卷/部/辑/篇) → null
+//   5. otherwise → split: volumeText = prefix.trim(), chapterText = text.slice(markerStart)
+export function splitVolumeEntry(text, kind) {
+    if (!kind || !kind.startsWith('seq:')) return null;
+    const units = kind.slice(4);
+    const lastUnit = units[units.length - 1];
+    if (lastUnit !== '章' && lastUnit !== '回' && lastUnit !== '节') return null;
+
+    const t = normalize(text);
+
+    // Find the last chapter-level marker (章/回/节)
+    let lastChapter = null;
+    SEQ_RE.lastIndex = 0;
+    let m;
+    while ((m = SEQ_RE.exec(t)) !== null) {
+        const u = m[2];
+        if (u === '章' || u === '回' || u === '节') lastChapter = m;
+    }
+    if (!lastChapter) return null;
+
+    const prefix = t.slice(0, lastChapter.index);
+
+    // Find the last volume-level marker (卷/部/辑/篇) in the prefix
+    let lastVolume = null;
+    SEQ_RE.lastIndex = 0;
+    while ((m = SEQ_RE.exec(prefix)) !== null) {
+        const u = m[2];
+        if (u === '卷' || u === '部' || u === '辑' || u === '篇') lastVolume = m;
+    }
+    if (!lastVolume) return null;
+
+    const volumeText = prefix.trim();
+    const chapterText = t.slice(lastChapter.index);
+
+    const volUnit = lastVolume[2];
+    const volOrdinal = parseOrdinal(lastVolume[1]);
+    const volName = (prefix.slice(0, lastVolume.index) + ' ' + prefix.slice(lastVolume.index + lastVolume[0].length)).trim();
+    const volumeKey = `${volUnit}|${volOrdinal}|${volName}`;
+
+    return { volumeText, volumeKey, chapterText };
+}
+
 function normalize(s) {
     return (s || '').replace(/\s+/g, ' ').trim();
 }
@@ -231,6 +279,7 @@ export function detectChapterTitles(contentHtml, idOffset = 0) {
             text: c.text,
             level: c.info ? c.info.level : Math.max(0, (parseInt(c.tag[1], 10) || 2) - 2),
             id,
+            kind: c.info?.kind ?? 'heading',
         };
     });
 
