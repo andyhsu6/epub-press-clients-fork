@@ -11,6 +11,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { DOMParser, NodeFilter } from 'linkedom';
 
+// 变体副本, not the 规范副本 form: an inline anonymous XMLSerializer plus this file's own comment
+// above globalThis.fetch. The named-class 规范副本 is tests/toc.node-test.mjs (also
+// toc-volume-carryover / toc-volume-e2e) — align this block with it first, then diff.
 class BrowserLikeDOMParser extends DOMParser {
   parseFromString(html, type) {
     if (type === 'text/html' && typeof html === 'string' && !/^\s*(<!DOCTYPE|<html)/i.test(html)) {

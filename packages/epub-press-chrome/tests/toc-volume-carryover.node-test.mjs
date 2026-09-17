@@ -13,7 +13,7 @@
 //
 // Fixture contract (tests/fixtures/toc/volume-carryover.html) — read this before editing it:
 //  * 13 labels, each a `<p>` of at most TITLE_MAX_LEN (40) chars with its own long body `<p>`
-//    after it (the tests/toc-matrix.node-test.mjs:56-58 shape), no `<br>`. Drop that body and
+//    after it (the tests/toc-matrix.node-test.mjs:60-62 shape), no `<br>`. Drop that body and
 //    the label dies during DETECTION, failing the coverage test rather than a shape one.
 //  * Add or remove a label and three things here move together: the want list, every child
 //    list deepEqual below, and the 21 = 7 parents + 13 chapters + References total.
@@ -35,6 +35,14 @@ import { fileURLToPath } from 'node:url';
 import { DOMParser, NodeFilter } from 'linkedom';
 import JSZip from 'jszip';
 
+// 副本须同步修 — 规范副本 (named-class 形): this shim block is byte-equal in exactly the three files
+// that carry this note (tests/toc.node-test.mjs, tests/toc-volume-carryover.node-test.mjs,
+// tests/toc-volume-e2e.node-test.mjs), which are each other's sync targets. Every other copy —
+// tests/toc-matrix.node-test.mjs, tests/pagination-merge.node-test.mjs,
+// tests/pagination-stop-reason.node-test.mjs, node-strip-test.mjs, tools/toc-level-lock.mjs — is a
+// 变体形 (file-specific: its own comment lines, an inline anonymous XMLSerializer, and/or a
+// different globalThis.fetch line — each variant's own note names its case), so align it
+// with this block first and only then diff it; each of those five carries a note pointing back here.
 class BrowserLikeDOMParser extends DOMParser {
   parseFromString(html, type) {
     if (type === 'text/html' && typeof html === 'string' && !/^\s*(<!DOCTYPE|<html)/i.test(html)) {
@@ -95,6 +103,9 @@ const NCX = parts['OEBPS/toc.ncx'];
 // assertWellFormed, parseNavMap, walk) so a broken probe cannot take both suites down at once —
 // which means the two copies have to be fixed together: change one, change the other, or the
 // suites stop proving the same shape.
+// The third member of that probe family is NAV_ROWS_PROBE in tests/toc.node-test.mjs: a 降形 of the
+// NAVMAP_PROBE below, returning depth-first {depth, text} rows only. Its shared rules sync the
+// same way.
 const WELL_FORMED_PROBE = 'import sys,xml.etree.ElementTree as E;E.fromstring(sys.stdin.buffer.read())';
 // navMap -> nested JSON, one node per navPoint: {id, src, text, order, depth, children}.
 // text/src come back entity-decoded by the parser itself. Flush-left: python -c is
@@ -148,7 +159,9 @@ json.dump({'dtbDepth': dtb, 'navPoints': [convert(n, 0) for n in navpoints(navma
 `;
 
 function runPython(name, script, xml, clause) {
-  const r = spawnSync('python3', ['-c', script], { input: Buffer.from(xml, 'utf8') });
+  // 15s is far above the ~50ms these probes take and far below a test run worth waiting for;
+  // a wedged interpreter comes back as r.error (code ETIMEDOUT) and rides the branch below.
+  const r = spawnSync('python3', ['-c', script], { input: Buffer.from(xml, 'utf8'), timeout: 15000 });
   // A missing interpreter comes back as r.error with status null, so it has to be handled
   // before anything touches r.stderr — otherwise the failure is an opaque TypeError.
   if (r.error) assert.fail(`${name}: python3 probe unavailable (${r.error.code})`);
@@ -156,7 +169,8 @@ function runPython(name, script, xml, clause) {
     const err = ((r.stderr || '').toString().trim().split('\n').pop()) || 'parse failed';
     assert.fail(`${name} ${clause} -> ${err}\n--- head ---\n${xml.slice(0, 260)}`);
   }
-  return (r.stdout || '').toString();
+  // The exit code travels with the stdout, so a caller that parses it can name it too.
+  return { out: (r.stdout || '').toString(), status: r.status };
 }
 
 function assertWellFormed(name, xml) {
@@ -166,9 +180,17 @@ function assertWellFormed(name, xml) {
 // The root sentinel is JS-side only, so depth-first rows can name a top-level node's parent.
 // `name` is what a failing probe is reported as: pass the part you are reading.
 function parseNavMap(name, xml) {
-  const out = runPython(`${name} navMap`, NAVMAP_PROBE, xml, 'has no usable navMap');
+  const { out, status } = runPython(`${name} navMap`, NAVMAP_PROBE, xml, 'has no usable navMap');
   assert.ok(out.trim().startsWith('{'), `the navMap probe returned no JSON:\n${out.slice(0, 200)}`);
-  const probe = JSON.parse(out);
+  // Output that starts with '{' and still will not parse means a truncated probe run; naming the
+  // exit code and the stdout head is what separates that from a malformed ncx.
+  let probe;
+  try {
+    probe = JSON.parse(out);
+  } catch (e) {
+    assert.fail(`${name} navMap probe returned unparseable JSON (${e.message}, exit ${status})`
+      + `\n--- stdout head ---\n${out.slice(0, 260)}`);
+  }
   assert.ok(Array.isArray(probe.navPoints), 'the navMap probe returned no node list');
   const check = (node) => {
     // The probe reports text: null for a navPoint with no navLabel/text. Naming the node here

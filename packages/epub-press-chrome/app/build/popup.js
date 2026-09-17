@@ -49368,7 +49368,55 @@ const VOCAB_RE = /^\s*(序章|序言|楔子|引子|前言|尾声|后记|後記|�
 const NOISE_RE = /发表于|发布于|更新于|举报|回复|点赞|收藏|分享|广告|下载|下一页|上一页|下一章|上一章|返回目录|加入书签|本章未完|未经允许|copyright|http:|www\.|\.com|\.net/i;
 const SENTENCE_END_RE = /[。！？；，、…”』】）)】]$/;
 const MAX_ENTRIES_PER_PAGE = 500;
-const TITLE_MAX_LEN = 40;
+const TITLE_MAX_LEN = 40; // Split an inline volume+chapter label into parent (volume) and child (chapter).
+// Returns null when the label has no volume-level prefix to split off.
+// Decision table:
+//   1. kind is not seq: → null
+//   2. last unit is not 章/回/节 → null (no chapter marker)
+//   3. prefix before the last chapter marker is empty → null
+//   4. prefix has no volume-level marker (卷/部/辑/篇) → null
+//   5. otherwise → split: volumeText = prefix.trim(), chapterText = text.slice(markerStart)
+
+function splitVolumeEntry(text, kind) {
+  if (!kind || !kind.startsWith('seq:')) return null;
+  const units = kind.slice(4);
+  const lastUnit = units[units.length - 1];
+  if (lastUnit !== '章' && lastUnit !== '回' && lastUnit !== '节') return null;
+  const t = toc_normalize(text); // Find the last chapter-level marker (章/回/节)
+
+  let lastChapter = null;
+  SEQ_RE.lastIndex = 0;
+  let m;
+
+  while ((m = SEQ_RE.exec(t)) !== null) {
+    const u = m[2];
+    if (u === '章' || u === '回' || u === '节') lastChapter = m;
+  }
+
+  if (!lastChapter) return null;
+  const prefix = t.slice(0, lastChapter.index); // Find the last volume-level marker (卷/部/辑/篇) in the prefix
+
+  let lastVolume = null;
+  SEQ_RE.lastIndex = 0;
+
+  while ((m = SEQ_RE.exec(prefix)) !== null) {
+    const u = m[2];
+    if (u === '卷' || u === '部' || u === '辑' || u === '篇') lastVolume = m;
+  }
+
+  if (!lastVolume) return null;
+  const volumeText = prefix.trim();
+  const chapterText = t.slice(lastChapter.index);
+  const volUnit = lastVolume[2];
+  const volOrdinal = parseOrdinal(lastVolume[1]);
+  const volName = (prefix.slice(0, lastVolume.index) + ' ' + prefix.slice(lastVolume.index + lastVolume[0].length)).trim();
+  const volumeKey = `${volUnit}|${volOrdinal}|${volName}`;
+  return {
+    volumeText,
+    volumeKey,
+    chapterText
+  };
+}
 
 function toc_normalize(s) {
   return (s || '').replace(/\s+/g, ' ').trim();
@@ -49566,13 +49614,16 @@ function detectChapterTitles(contentHtml, idOffset = 0) {
   }).slice(0, MAX_ENTRIES_PER_PAGE);
   let counter = idOffset;
   const entries = picked.map(c => {
+    var _c$info$kind, _c$info;
+
     const id = c.el.getAttribute('id') || `toc-h-${counter}`;
     if (!c.el.getAttribute('id')) c.el.setAttribute('id', `toc-h-${counter}`);
     counter++;
     return {
       text: c.text,
       level: c.info ? c.info.level : Math.max(0, (parseInt(c.tag[1], 10) || 2) - 2),
-      id
+      id,
+      kind: (_c$info$kind = (_c$info = c.info) === null || _c$info === void 0 ? void 0 : _c$info.kind) !== null && _c$info$kind !== void 0 ? _c$info$kind : 'heading'
     };
   });
   const serialized = new XMLSerializer().serializeToString(body).replace(/^<body[^>]*>/, '').replace(/<\/body>$/, '');
@@ -50197,32 +50248,80 @@ function downloadImages(images) {
 
 
 const MAX_TOC_DEPTH = 5;
+let currentVolume = null; // { key, text, childLevel }
+
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch (_unused) {
+    return null;
+  }
+}
 
 async function buildTocEntries(book) {
   const entries = [];
   let idOffset = 0;
+  currentVolume = null;
 
   for (const page of book.pages) {
     const detected = detectChapterTitles(page.content, idOffset);
     idOffset += detected.entries.length;
     page.content = detected.content;
+    const pageHost = hostOf(page.url);
+
+    if (pageHost && currentVolume && currentVolume.host && pageHost !== currentVolume.host) {
+      currentVolume = null; // different host → clear context
+    }
 
     if (detected.entries.length === 0) {
+      const fbText = cleanChapterTitle(page.title, book.title);
+      const fbLevel = currentVolume ? currentVolume.childLevel : 0;
       entries.push({
-        text: cleanChapterTitle(page.title, book.title),
-        level: 0,
+        text: fbText,
+        level: fbLevel,
         id: null,
         page
       });
+      if (pageHost && currentVolume) currentVolume.host = pageHost;
       continue;
     }
 
-    detected.entries.forEach(e => entries.push({
-      text: e.text,
-      level: e.level,
-      id: e.id,
-      page
-    }));
+    detected.entries.forEach(e => {
+      const split = e.kind ? splitVolumeEntry(e.text, e.kind) : null;
+
+      if (split) {
+        if (!currentVolume || currentVolume.key !== split.volumeKey) {
+          var _currentVolume;
+
+          entries.push({
+            text: split.volumeText,
+            level: 0,
+            id: e.id,
+            page
+          });
+          currentVolume = {
+            key: split.volumeKey,
+            text: split.volumeText,
+            childLevel: e.level,
+            host: pageHost || ((_currentVolume = currentVolume) === null || _currentVolume === void 0 ? void 0 : _currentVolume.host) || null
+          };
+        }
+
+        entries.push({
+          text: split.chapterText,
+          level: e.level,
+          id: e.id,
+          page
+        });
+      } else {
+        entries.push({
+          text: e.text,
+          level: e.level,
+          id: e.id,
+          page
+        });
+      }
+    });
   }
 
   return entries;
@@ -50423,7 +50522,7 @@ async function generateEpub(book) {
 function generater_getDomain(url) {
   try {
     return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
-  } catch (_unused) {
+  } catch (_unused2) {
     return null;
   }
 } // CJK punctuation terminates a bare URL so no stray punctuation is left behind.

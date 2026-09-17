@@ -17,6 +17,14 @@ import { fileURLToPath } from 'node:url';
 import { DOMParser, NodeFilter, parseHTML } from 'linkedom';
 import JSZip from 'jszip';
 
+// 副本须同步修 — 规范副本 (named-class 形): this shim block is byte-equal in exactly the three files
+// that carry this note (tests/toc.node-test.mjs, tests/toc-volume-carryover.node-test.mjs,
+// tests/toc-volume-e2e.node-test.mjs), which are each other's sync targets. Every other copy —
+// tests/toc-matrix.node-test.mjs, tests/pagination-merge.node-test.mjs,
+// tests/pagination-stop-reason.node-test.mjs, node-strip-test.mjs, tools/toc-level-lock.mjs — is a
+// 变体形 (file-specific: its own comment lines, an inline anonymous XMLSerializer, and/or a
+// different globalThis.fetch line — each variant's own note names its case), so align it
+// with this block first and only then diff it; each of those five carries a note pointing back here.
 class BrowserLikeDOMParser extends DOMParser {
   parseFromString(html, type) {
     if (type === 'text/html' && typeof html === 'string' && !/^\s*(<!DOCTYPE|<html)/i.test(html)) {
@@ -77,9 +85,15 @@ async function build(fixtureNames, title = 'Test Book') {
 }
 
 function assertWellFormed(name, xml) {
+  // timeout: 15000, the same ceiling navRows below uses — far above the ~50ms these probes take and
+  // far below a test run worth waiting for. A wedged interpreter comes back as r.error
+  // (code ETIMEDOUT) with status null.
   const r = spawnSync('python3',
     ['-c', 'import sys,xml.etree.ElementTree as E;E.fromstring(sys.stdin.buffer.read())'],
-    { input: Buffer.from(xml, 'utf8') });
+    { input: Buffer.from(xml, 'utf8'), timeout: 15000 });
+  // A missing (or timed-out) interpreter comes back as r.error with status null, so it has to be
+  // handled before anything touches r.stderr — otherwise the failure is an opaque TypeError.
+  if (r.error) assert.fail(`${name}: python3 probe unavailable (${r.error.code})`);
   if (r.status !== 0) {
     const err = (r.stderr.toString() || '').trim().split('\n').pop() || 'parse failed';
     assert.fail(`${name} is not well-formed XML -> ${err}\n--- head ---\n${xml.slice(0, 260)}`);
@@ -170,7 +184,11 @@ describe('detectChapterTitles', () => {
 // Structural reads must also go through a real XML parser: an HTML parser ignores
 // self-closing foreign elements like <content/>, which corrupts the parent chain.
 function xmlNumber(xml, pyProgram) {
-  const r = spawnSync('python3', ['-c', pyProgram], { input: Buffer.from(xml, 'utf8') });
+  const r = spawnSync('python3', ['-c', pyProgram],
+    { input: Buffer.from(xml, 'utf8'), timeout: 15000 });
+  // Same reason as in assertWellFormed: a missing or timed-out interpreter sets r.error and leaves
+  // r.stderr null, so it has to be handled before anything reads it.
+  if (r.error) assert.fail(`python3 probe unavailable (${r.error.code})`);
   if (r.status !== 0) assert.fail(`probe failed: ${r.stderr.toString().trim().split('\n').pop()}`);
   return Number(r.stdout.toString().trim());
 }
@@ -182,6 +200,70 @@ const NCX_PROBE = (expr) => [
   '    return max([l]+[dep(c,l+(1 if c.tag==N+"navPoint" else 0)) for c in e])',
   expr,
 ].join('\n');
+
+// The whole navMap as depth-first {depth, text} rows, so an assertion can name the place a
+// label sits instead of only its presence. Same parser as the well-formedness gate on purpose:
+// the parent chain is exactly what an HTML tokenizer gets wrong. Flush-left — python -c is
+// whitespace-sensitive, so not one of these lines may be indented from JS.
+// 副本须同步修 (探针家族): this probe is the 降形 of NAVMAP_PROBE, the navMap reader the two volume
+// suites copy from each other (tests/toc-volume-carryover.node-test.mjs,
+// tests/toc-volume-e2e.node-test.mjs). Same expat parse and same depth-first navPoint walk, with the
+// rows narrowed to {depth, text} — no id, no src, no playOrder, no dtb:depth — because this file
+// names a place in the outline instead of following a link. It is a third copy rather than a shared
+// import for the same reason those two are two: a broken probe must not take every suite down at
+// once. So when a rule the family shares changes — the flush-left discipline, the entity-decoded
+// navLabel/text read, the walk's depth counting, or the caller-side r.error / exit-code /
+// stdout-head handling — carry it into NAVMAP_PROBE (and its runPython) in both files too. What
+// deliberately differs is only the reporting of a missing navMap: NAVMAP_PROBE says so in python
+// through exit codes 2/3, this 降形 lets the probe die and names it from navRows' status branch.
+const NAV_ROWS_PROBE = [
+  'import json, sys, xml.etree.ElementTree as E',
+  'r = E.fromstring(sys.stdin.buffer.read())',
+  "N = '{http://www.daisy.org/z3986/2005/ncx/}'",
+  'rows = []',
+  'def walk(el, d = 0):',
+  '    for p in el:',
+  '        if p.tag == N + "navPoint":',
+  '            t = p.find(N + "navLabel/" + N + "text")',
+  "            rows.append({'depth': d, 'text': ((t.text if t is not None else '') or '').strip()})",
+  '            walk(p, d + 1)',
+  'walk(r.find(N + "navMap"))',
+  'json.dump(rows, sys.stdout, ensure_ascii=False)',
+].join('\n');
+
+function navRows(name, xml) {
+  const r = spawnSync('python3', ['-c', NAV_ROWS_PROBE],
+    { input: Buffer.from(xml, 'utf8'), timeout: 15000 });
+  // A missing interpreter (or a hung one) comes back as r.error with status null, so it has to
+  // be handled before anything touches r.stderr — otherwise the failure is an opaque TypeError.
+  if (r.error) assert.fail(`${name}: python3 probe unavailable (${r.error.code})`);
+  if (r.status !== 0) {
+    const err = ((r.stderr || '').toString().trim().split('\n').pop()) || 'parse failed';
+    assert.fail(`${name} has no usable navMap -> ${err}\n--- head ---\n${xml.slice(0, 260)}`);
+  }
+  const out = (r.stdout || '').toString();
+  // A probe that died mid-write leaves truncated stdout; naming it beats a bare SyntaxError.
+  let rows;
+  try {
+    rows = JSON.parse(out);
+  } catch (e) {
+    assert.fail(`${name} navMap probe returned no JSON (${e.message}, exit ${r.status})`
+      + `\n--- stdout head ---\n${out.slice(0, 260)}`);
+  }
+  assert.ok(Array.isArray(rows),
+    `${name} navMap probe returned ${out.slice(0, 200)}, not a list of navPoints`);
+  return rows;
+}
+
+// An indented print of rows, for the messages that must show the tree they just rejected.
+const shapeOf = (rows) => rows.map((r) => `${'  '.repeat(r.depth)}- ${r.text}`).join('\n');
+
+// tests/fixtures/toc/ibbs-forum-13chapters.html declares 第一卷太后篇 inside every one of its 13
+// chapter labels, so the outline that page yields is that single volume parent plus the 13
+// chapters it now holds. The ordinals are the ones the detector assertions above pin.
+const IBBS_VOLUME = '第一卷太后篇';
+const IBBS_CHAPTERS = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二', '十三']
+  .map((n) => `第${n}章`);
 
 describe('reader table of contents', () => {
   test('a mixed-level article produces genuinely nested navPoints', async () => {
@@ -196,16 +278,32 @@ describe('reader table of contents', () => {
     assert.ok(labels.indexOf('一、离乡') > labels.indexOf('风与尘'), 'a child must follow its parent');
   });
 
-  test('sibling chapters with no volume heading stay flat, without invented parents', async () => {
+  test('a volume named inline on all 13 chapters stays one parent, with no invented siblings', async () => {
     const files = await build(['ibbs-forum-13chapters.html']);
     const ncx = files['OEBPS/toc.ncx'];
     assertWellFormed('OEBPS/toc.ncx', ncx);
-    assert.equal(xmlNumber(ncx, NCX_PROBE('print(dep(r.find(N+"navMap")))')), 1,
-      '13 same-level chapters must not be nested under each other');
-    assert.equal(xmlNumber(ncx, NCX_PROBE('print(sum(1 for e in r.iter(N+"navPoint")))')), 14,
-      'expected 13 chapter navPoints plus References');
+    const rows = navRows('OEBPS/toc.ncx', ncx);
+    // 15 = 1 volume parent + 13 chapter rows + the template's References row. Counted once
+    // through this file's own navPoint tally, once through the depth-first walk below. The message
+    // names the tally, because that is the value being compared here; rows.length comes from a
+    // different probe, and a walk that stopped descending would print a number this assertion
+    // never looked at.
+    const navPoints = xmlNumber(ncx, NCX_PROBE('print(sum(1 for e in r.iter(N+"navPoint")))'));
+    assert.equal(navPoints, 15,
+      `expected 1 volume parent + 13 chapters + References, got ${navPoints} navPoints:\n${shapeOf(rows)}`);
+    assert.equal(xmlNumber(ncx, NCX_PROBE('print(dep(r.find(N+"navMap")))')), 2,
+      `the 13 chapters must nest one step under the volume they name, not beside it:\n${shapeOf(rows)}`);
     const depth = (ncx.match(/name="dtb:depth"\s+content="(\d+)"/) || [])[1];
-    assert.equal(Number(depth), 1, 'a flat list is one level deep');
+    assert.equal(Number(depth), 2,
+      `a volume/chapter outline is two levels deep, dtb:depth says ${depth}:\n${shapeOf(rows)}`);
+    // Each part pinned by position: the volume opens the navMap, its 13 chapters are the next
+    // 13 rows at depth 1, and References is the only other top-level row — so no parent was
+    // invented for the chapters, and no chapter escaped the volume that was declared for it.
+    assert.deepEqual(rows.map((r) => ({ depth: r.depth, text: r.text })),
+      [{ depth: 0, text: IBBS_VOLUME }]
+        .concat(IBBS_CHAPTERS.map((text) => ({ depth: 1, text })))
+        .concat([{ depth: 0, text: 'References' }]),
+      `depth-first shape of the navMap must be the volume, its 13 chapters, then References:\n${shapeOf(rows)}`);
   });
 
   test('entities and inline tags keep the spaces around them in the body', async () => {
@@ -232,14 +330,30 @@ describe('reader table of contents', () => {
     }
   });
 
-  test('a forum page holding 13 chapters yields 13 TOC entries', async () => {
+  test('a forum page holding 13 chapters yields one volume row and its 13 bare chapter rows', async () => {
     const files = await build(['ibbs-forum-13chapters.html']);
-    const labels = textOf(files['OEBPS/toc.ncx'], 'text');
-    const want = Array.from({ length: 13 }, (_, i) =>
-      `第一卷太后篇第${['一','二','三','四','五','六','七','八','九','十','十一','十二','十三'][i]}章`);
-    for (const w of want) {
-      assert.ok(labels.some((l) => l.trim() === w), `missing TOC entry: ${w}`);
-    }
+    const rows = navRows('OEBPS/toc.ncx', files['OEBPS/toc.ncx']);
+    const texts = rows.map((r) => r.text);
+    // All 13 labels declare the same volume and the carry-over reuses the parent it opened,
+    // so 第一卷太后篇 is in the outline exactly once — not once per label.
+    assert.equal(texts.filter((t) => t === IBBS_VOLUME).length, 1,
+      `${IBBS_VOLUME} must become one parent, got ${texts.filter((t) => t === IBBS_VOLUME).length}:\n${shapeOf(rows)}`);
+    // decision-table case 5 (see scripts/toc.js:72) moved the prefix out of the child, so no row
+    // below the volume still reads 第一卷太后篇第X章.
+    assert.deepEqual(texts.filter((t) => t !== IBBS_VOLUME && t.startsWith(IBBS_VOLUME)), [],
+      `a chapter row still carries the inline volume prefix:\n${shapeOf(rows)}`);
+    // The 13 chapters themselves, in the order the page declares them, one step under the parent.
+    assert.deepEqual(rows.slice(1, 1 + IBBS_CHAPTERS.length),
+      IBBS_CHAPTERS.map((text) => ({ depth: 1, text })),
+      `expected 第一章…第十三章 as the volume's own rows, in order:\n${shapeOf(rows)}`);
+    // Parent before child, structurally, and pinned by this assertion together with the
+    // slice(1, 14) deepEqual just above: the volume is the navMap's first row and the 13 chapters
+    // are rows 1..13, so every chapter's index in `texts` is at least 1 and a reader walking the
+    // file meets the volume before any of its chapters. A separate "min chapter index > 0"
+    // assertion used to sit here; those two strictly imply it — there is no ordering it could fail
+    // while they hold — so it was dropped as a duplicate, not as a property given up.
+    assert.equal(texts.indexOf(IBBS_VOLUME), 0,
+      `the volume must be the first navPoint of the navMap:\n${shapeOf(rows)}`);
   });
 
   test('post metadata lines never become TOC entries', async () => {

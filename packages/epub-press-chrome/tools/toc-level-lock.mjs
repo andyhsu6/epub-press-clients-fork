@@ -1,9 +1,12 @@
 // Emits the level/entry snapshot of the real-page fixtures as a JS literal.
 //
-// Why: tests/toc.node-test.mjs asserts entry *counts* only, so a change that keeps
-// the count and corrupts the hierarchy (a front-matter label promoted to the parent
-// of 第一章) passes the suite. This file is the golden source for those locks;
-// re-run it and commit the diff when a level change is deliberate.
+// Why: the detector-layer assertions in tests/toc.node-test.mjs still count entries (plus a
+// head-at-level-0 / some-subheading-deeper shape check), and since the volume carry-over its
+// tree-layer assertions read a parsed navMap — but that shape coverage is the ibbs book and the
+// multi-heading article only. Nothing there pins the level sequence detectChapterTitles returns
+// for the other real-page fixtures, so a change that keeps the count and corrupts the hierarchy
+// (a front-matter label promoted to the parent of 第一章) still passes the suite. This file is the
+// golden source for those locks; re-run it and commit the diff when a level change is deliberate.
 //
 //   node tools/toc-level-lock.mjs
 import { readFileSync } from 'node:fs';
@@ -11,6 +14,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DOMParser, NodeFilter } from 'linkedom';
 
+// 变体副本, not the 规范副本 form: an inline anonymous XMLSerializer and a 'no network in fixtures'
+// fetch. The named-class 规范副本 is tests/toc.node-test.mjs (also toc-volume-carryover /
+// toc-volume-e2e) — align this block with it first, then diff.
 class BrowserLikeDOMParser extends DOMParser {
   parseFromString(html, type) {
     if (type === 'text/html' && typeof html === 'string' && !/^\s*(<!DOCTYPE|<html)/i.test(html)) {

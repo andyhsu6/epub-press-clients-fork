@@ -16,6 +16,10 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DOMParser, NodeFilter } from 'linkedom';
 
+// 变体副本, not the 规范副本 form: an inline anonymous XMLSerializer and a 'no network in fixtures'
+// fetch. The named-class 规范副本 — whose note lists every variant copy — is in
+// tests/toc.node-test.mjs (also in toc-volume-carryover / toc-volume-e2e): align this block with it
+// first, then diff.
 class BrowserLikeDOMParser extends DOMParser {
   parseFromString(html, type) {
     if (type === 'text/html' && typeof html === 'string' && !/^\s*(<!DOCTYPE|<html)/i.test(html)) {
@@ -178,8 +182,11 @@ const LOCK_URLS = {
   'standalone-p-titles.html': 'https://serial.example.com/book/biancheng',
 };
 
-// toc.node-test.mjs asserts counts, so promoting 序章 from level 1 to 0 — which makes
-// it the parent of 第一章 in the reader outline — is invisible there.
+// toc.node-test.mjs counts entries at the detector layer (plus a head-at-level-0 /
+// some-subheading-deeper shape check), and its tree-layer assertions read a parsed
+// navMap, but only for the ibbs book and the multi-heading article, so no level sequence
+// here is pinned there: promoting 序章 from level 1 to 0 — which makes it the parent of 第一章 in
+// the reader outline — stays invisible to that suite.
 test('真实页面的层级序列不得被静默改写', async () => {
   for (const lock of FIXTURE_LOCKS) {
     const html = readFileSync(join(PKG, 'tests', 'fixtures', 'toc', lock.fixture), 'utf8');

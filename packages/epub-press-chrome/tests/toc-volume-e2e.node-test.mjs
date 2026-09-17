@@ -36,15 +36,22 @@
 //    match that file row for row, so editing the fixture cannot quietly redefine the book.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DOMParser, NodeFilter } from 'linkedom';
 import JSZip from 'jszip';
 
+// 副本须同步修 — 规范副本 (named-class 形): this shim block is byte-equal in exactly the three files
+// that carry this note (tests/toc.node-test.mjs, tests/toc-volume-carryover.node-test.mjs,
+// tests/toc-volume-e2e.node-test.mjs), which are each other's sync targets. Every other copy —
+// tests/toc-matrix.node-test.mjs, tests/pagination-merge.node-test.mjs,
+// tests/pagination-stop-reason.node-test.mjs, node-strip-test.mjs, tools/toc-level-lock.mjs — is a
+// 变体形 (file-specific: its own comment lines, an inline anonymous XMLSerializer, and/or a
+// different globalThis.fetch line — each variant's own note names its case), so align it
+// with this block first and only then diff it; each of those five carries a note pointing back here.
 class BrowserLikeDOMParser extends DOMParser {
   parseFromString(html, type) {
     if (type === 'text/html' && typeof html === 'string' && !/^\s*(<!DOCTYPE|<html)/i.test(html)) {
@@ -70,8 +77,9 @@ const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'toc');
 // The e2e fixture is 192 KB and is read from three places (the block probe, the built book and
 // the Readability test), so each name is read once per run and cached.
 const FIXTURES = new Map();
-// How many times each name actually reached the disk, so the cache itself is asserted on and
-// cannot be bypassed by a later readFileSync(join(FIX, ...)) without a test noticing.
+// How many times each name actually reached the disk *through fixture()*. The one assertion on it
+// proves the cache is doing its work: three use sites, one read. It cannot see a readFileSync that
+// bypasses fixture(), so it is a cache-effectiveness check, not a bypass detector.
 const FIXTURE_READS = new Map();
 function fixture(name) {
   if (!FIXTURES.has(name)) {
@@ -98,6 +106,9 @@ const URLS = {
 // together, and the ncx carries the daisy namespace, so every element name has to be matched on
 // local-name. THE TWO COPIES ARE ONE THING: any change here has to be made in that file too, or
 // the suites drift apart and stop proving the same shape.
+// The third member of that probe family is NAV_ROWS_PROBE in tests/toc.node-test.mjs: a 降形 of the
+// NAVMAP_PROBE below, returning depth-first {depth, text} rows only. Its shared rules sync the same
+// way.
 const WELL_FORMED_PROBE = 'import sys,xml.etree.ElementTree as E;E.fromstring(sys.stdin.buffer.read())';
 // navMap -> nested JSON, one node per navPoint: {id, src, text, order, depth, children}.
 // text/src come back entity-decoded by the parser itself. Flush-left: python -c is
@@ -151,7 +162,9 @@ json.dump({'dtbDepth': dtb, 'navPoints': [convert(n, 0) for n in navpoints(navma
 `;
 
 function runPython(name, script, xml, clause) {
-  const r = spawnSync('python3', ['-c', script], { input: Buffer.from(xml, 'utf8') });
+  // 15s is far above the ~50ms these probes take and far below a test run worth waiting for;
+  // a wedged interpreter comes back as r.error (code ETIMEDOUT) and rides the branch below.
+  const r = spawnSync('python3', ['-c', script], { input: Buffer.from(xml, 'utf8'), timeout: 15000 });
   // A missing interpreter comes back as r.error with status null, so it has to be handled
   // before anything touches r.stderr — otherwise the failure is an opaque TypeError.
   if (r.error) assert.fail(`${name}: python3 probe unavailable (${r.error.code})`);
@@ -159,7 +172,8 @@ function runPython(name, script, xml, clause) {
     const err = ((r.stderr || '').toString().trim().split('\n').pop()) || 'parse failed';
     assert.fail(`${name} ${clause} -> ${err}\n--- head ---\n${xml.slice(0, 260)}`);
   }
-  return (r.stdout || '').toString();
+  // The exit code travels with the stdout, so a caller that parses it can name it too.
+  return { out: (r.stdout || '').toString(), status: r.status };
 }
 
 function assertWellFormed(name, xml) {
@@ -169,9 +183,17 @@ function assertWellFormed(name, xml) {
 // The root sentinel is JS-side only, so depth-first rows can name a top-level node's parent.
 // `name` is what a failing probe is reported as: pass the part you are reading.
 function parseNavMap(name, xml) {
-  const out = runPython(`${name} navMap`, NAVMAP_PROBE, xml, 'has no usable navMap');
+  const { out, status } = runPython(`${name} navMap`, NAVMAP_PROBE, xml, 'has no usable navMap');
   assert.ok(out.trim().startsWith('{'), `the navMap probe returned no JSON:\n${out.slice(0, 200)}`);
-  const probe = JSON.parse(out);
+  // Output that starts with '{' and still will not parse means a truncated probe run; naming the
+  // exit code and the stdout head is what separates that from a malformed ncx.
+  let probe;
+  try {
+    probe = JSON.parse(out);
+  } catch (e) {
+    assert.fail(`${name} navMap probe returned unparseable JSON (${e.message}, exit ${status})`
+      + `\n--- stdout head ---\n${out.slice(0, 260)}`);
+  }
   assert.ok(Array.isArray(probe.navPoints), 'the navMap probe returned no node list');
   const check = (node) => {
     // The probe reports text: null for a navPoint with no navLabel/text. Naming the node here
@@ -257,13 +279,20 @@ const BLOCKS = fixtureBlocks(fixture(E2E));
 //   python3 - <<'PY'                                   # from the repo root
 //   import hashlib
 //   L = open('.omo/toc-analysis/labels.txt').read().split('\n')[:211]
+//   if L[-1] == '': L.pop()      # a split leaves one empty row per terminated last line
 //   print(hashlib.sha256('\n'.join(L).encode()).hexdigest()[:16])
 //   PY                                                # -> f9690d68dfc023df
 //   The committed fixture hashes to that same value with the same recipe: swap the file above
 //   for 'packages/epub-press-chrome/tests/fixtures/toc/volume-carryover-e2e-labels.txt' and drop
-//   the [:211], and the digest printed is identical.
-// One character changed in that txt turns three things red: the verbatim comparison against
-// the fixture, the digest, and the detected-label deepEqual further down.
+//   the [:211], and the digest printed is identical. The pop is what makes that true on its own —
+//   the whole file split gives 212 rows, the last one empty, and joining it as-is puts a trailing
+//   '\n' into the hashed text, which reads aa61c53d2004784d instead. LABELS below pops exactly
+//   that row, so the asserted value and this recipe are the same computation.
+// One character changed in that txt turns two tests red: the verbatim comparison against the
+// fixture, and the detected-label deepEqual further down. The digest assertion lives inside the
+// first test, after the comparison, so a drifted label aborts that test before the digest is
+// ever reached — the digest is a backstop for a drift that keeps both lines equal, not a third
+// observable failure.
 const LABELS_SHA256_16 = 'f9690d68dfc023df';
 const LABELS = fixture(LABELS_TXT).split('\n');
 if (LABELS[LABELS.length - 1] === '') LABELS.pop(); // the last line's terminator, not a 212th row
@@ -516,44 +545,35 @@ describe('carry-over across sections, measured on the tree', () => {
 const REAL_EPUB = '/Users/andyhsu/Downloads/风花雪月楼.epub';
 test('smoke, read-only: the shipped ncx is 212 rows at depth 1 and rebuilds to 216 at depth 2',
   { skip: !existsSync(REAL_EPUB) ? `the real book is not at ${REAL_EPUB}` : false }, async () => {
-    // A fresh, unique scratch dir per run — never a fixed path, which two concurrent runs would
-    // share and which rmSync must then not touch. The directory this deletes is exactly the one
-    // mkdtempSync handed back, and nothing else.
-    const tmp = mkdtempSync(join(tmpdir(), 'epubpressx-toc-volume-e2e-'));
-    try {
-      const zip = await JSZip.loadAsync(readFileSync(REAL_EPUB));
-      // zip.file() is null for a part the archive does not hold; the .async() chain would then
-      // be an opaque TypeError instead of a named part.
-      const ncxEntry = zip.file('OEBPS/toc.ncx');
-      assert.ok(ncxEntry, `the shipped book has no OEBPS/toc.ncx: ${REAL_EPUB}`);
-      const chapterEntry = zip.file('OEBPS/chapter2.xhtml');
-      assert.ok(chapterEntry, `the shipped book has no OEBPS/chapter2.xhtml: ${REAL_EPUB}`);
-      const orig = await ncxEntry.async('string');
-      const chapter = await chapterEntry.async('string');
-      // Nothing under Downloads is ever written; both files are copied out for inspection.
-      writeFileSync(join(tmp, 'original-toc.ncx'), orig);
+    // Both parts are parsed straight out of the archive in memory and no copy is written
+    // anywhere, so the shipped book cannot be touched by this run.
+    const zip = await JSZip.loadAsync(readFileSync(REAL_EPUB));
+    // zip.file() is null for a part the archive does not hold; the .async() chain would then
+    // be an opaque TypeError instead of a named part.
+    const ncxEntry = zip.file('OEBPS/toc.ncx');
+    assert.ok(ncxEntry, `the shipped book has no OEBPS/toc.ncx: ${REAL_EPUB}`);
+    const chapterEntry = zip.file('OEBPS/chapter2.xhtml');
+    assert.ok(chapterEntry, `the shipped book has no OEBPS/chapter2.xhtml: ${REAL_EPUB}`);
+    const orig = await ncxEntry.async('string');
+    const chapter = await chapterEntry.async('string');
 
-      assertWellFormed('the shipped toc.ncx', orig);
-      const before = parseNavMap('the shipped toc.ncx', orig);
-      const beforeRows = walk(before.root, 0, before.root);
-      assert.equal(beforeRows.length, 212, 'frozen baseline: 211 chapters + References');
-      assert.equal(Number(before.dtbDepth), 1, 'frozen baseline: the shipped outline is flat');
-      assert.equal(before.root.children.filter((c) => c.text.trim() !== 'References').length, 211,
-        'frozen baseline: every chapter is a top-level row');
+    assertWellFormed('the shipped toc.ncx', orig);
+    const before = parseNavMap('the shipped toc.ncx', orig);
+    const beforeRows = walk(before.root, 0, before.root);
+    assert.equal(beforeRows.length, 212, 'frozen baseline: 211 chapters + References');
+    assert.equal(Number(before.dtbDepth), 1, 'frozen baseline: the shipped outline is flat');
+    assert.equal(before.root.children.filter((c) => c.text.trim() !== 'References').length, 211,
+      'frozen baseline: every chapter is a top-level row');
 
-      const rebuilt = await unpack('风花雪月楼', [{
-        url: 'https://www.ibbs.pro/thread/68805aecf30dda264d164fe9',
-        html: titleShell(chapter, '风花雪月楼'),
-      }]);
-      writeFileSync(join(tmp, 'rebuilt-toc.ncx'), rebuilt.ncx);
-      assert.equal(rebuilt.rows.length, 216, `rebuilt from the real page:\n${rebuilt.shape()}`);
-      assert.equal(Number(rebuilt.nav.dtbDepth), 2, `rebuilt from the real page:\n${rebuilt.shape()}`);
-      assert.deepEqual(rebuilt.nav.root.children.filter((c) => c.text.trim() !== 'References')
-        .map((c) => `${c.text.trim()}=${c.children.length}`),
-      WANT_PARENTS.map(([t, n]) => `${t}=${n}`), `rebuilt parents:\n${rebuilt.shape()}`);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    const rebuilt = await unpack('风花雪月楼', [{
+      url: 'https://www.ibbs.pro/thread/68805aecf30dda264d164fe9',
+      html: titleShell(chapter, '风花雪月楼'),
+    }]);
+    assert.equal(rebuilt.rows.length, 216, `rebuilt from the real page:\n${rebuilt.shape()}`);
+    assert.equal(Number(rebuilt.nav.dtbDepth), 2, `rebuilt from the real page:\n${rebuilt.shape()}`);
+    assert.deepEqual(rebuilt.nav.root.children.filter((c) => c.text.trim() !== 'References')
+      .map((c) => `${c.text.trim()}=${c.children.length}`),
+    WANT_PARENTS.map(([t, n]) => `${t}=${n}`), `rebuilt parents:\n${rebuilt.shape()}`);
   });
 
 // The real page is one huge <div> of <p id="toc-h-N"> blocks plus the reader's own page
