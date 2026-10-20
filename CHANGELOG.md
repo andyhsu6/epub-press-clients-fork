@@ -1,5 +1,9 @@
 # Changelog
 
+### 1.2.5
+
+- raise the auto-pagination cap from 50 to 500 pages (long serialized novels were silently truncated at 50 chapters)
+
 ### 1.2.4
 
 - strip external-domain ad/recommendation links and bare URLs from exported content

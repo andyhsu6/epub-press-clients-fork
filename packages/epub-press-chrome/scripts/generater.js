@@ -4,7 +4,7 @@ import { encodeXml } from './escape.js';
 import { detectChapterTitles, cleanChapterTitle, splitVolumeEntry } from './toc.js';
 
 // ─── Auto-Pagination Constants ───────────────────────────────────────────────
-const MAX_PAGINATION_PAGES = 50;       // safety limit to prevent infinite loops
+const MAX_PAGINATION_PAGES = 500;      // safety limit to prevent infinite loops
 const PAGINATION_TIMEOUT_MS = 10000;   // per-page fetch timeout
 
 // ─── URL Utilities ───────────────────────────────────────────────────────────
