@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Issues / PR 同步**：本仓库（`fork` 远程 = `andyhsu6/epub-press-clients-fork`）或上游（`haroldtreen/epub-press-clients`）的 issues 和 PR 有变动时（新增 / 关闭 / 评论 / CI 状态变化 / 合并），必须及时同步更新本地记录：评估对本地 `epubpressx-custom` 分支的影响，并更新 `.omo/` 下的相关记录（plan / ledger / merge-record）。
 - **上游合并纪律**：本地是 EpubPressX 定制线（本地生成 EPUB），上游是服务端发布架构。合并上游提交时遵循 `方案 A`（本地为主，只吸收不冲突的修复如 MV3/Firefox 兼容），并在 `.omo/merge-record-*.md` 记录。
 - **远程约定**：`origin` = sunxen/EpubPressX（原始来源），`fork` = andyhsu6/epub-press-clients-fork（本项目的推送目标，分支 `epubpressx-custom`）。提交推送到 `fork`。
+- **Issue / PR 脱敏（硬性）**：用户排查问题时提供的真实来源信息 —— URL / 域名、书名与章节名、案号、账号、截图路径等 —— **一律不得**写入 GitHub 上的任何位置：issue 正文与标题、PR 描述、评论、commit message、分支名、release notes、代码注释。对外只允许抽象描述（如「某小说站的 60 章连载页面」「第 60 章」），把站点结构写成选择器/行为（如 `a[rel="next"]`）而不写域名。具体链接与书名只保留在本地 `.omo/` 记录或对话中。**发布前必须逐字扫描待发布文本，命中真实域名或书名即视为未完成**；已发布则立即编辑脱敏，并在 `.omo/` 记下脱敏时间与范围。
 
 ## Overview
 
